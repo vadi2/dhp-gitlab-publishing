@@ -134,12 +134,22 @@ pruning, so GitLab-only refs survive. Run it from cron.
 
 ## 4. Runner
 
-Install `gitlab-runner` from GitLab's package repository on the build host, install the toolchain from
-step 2 where the `gitlab-runner` user can see it, then register a shell-executor runner:
+Install `gitlab-runner` from GitLab's package repository on the build host, and install the toolchain from
+step 2 where the `gitlab-runner` user can see it. Create the runner in GitLab first - Admin > CI/CD >
+Runners > New instance runner, tag `dhp`, "Run untagged jobs" off - or over the API:
 
 ```sh
-sudo gitlab-runner register --non-interactive --url https://<gitlab> --token <runner authentication token> \
-  --executor shell --tag-list dhp
+curl --header "PRIVATE-TOKEN: $TOKEN" -X POST --form "runner_type=instance_type" \
+  --form "tag_list=dhp" --form "run_untagged=false" --form "description=dhp" \
+  "https://<gitlab>/api/v4/user/runners"
+```
+
+That returns the `glrt-...` authentication token. Register with it and nothing but the executor: tags,
+locked, untagged and paused now live on the server, and `register` aborts with "Runner configuration other
+than name and executor configuration is reserved" if `--tag-list` or any of them is passed.
+
+```sh
+sudo gitlab-runner register --non-interactive --url https://<gitlab> --token glrt-... --executor shell
 ```
 
 `/etc/gitlab-runner/config.toml` then needs one edit, `concurrent = 1` at the top, and `sudo gitlab-runner
@@ -165,7 +175,9 @@ concurrent = 1
   not found unless `environment = ["PATH=..."]` names them. Install them system-wide, or set the line.
 
 Check, as the runner user: `sudo -u gitlab-runner -H bash -c 'java -version && sushi --version && jekyll
---version && jq --version'`, and the runner shows up green under Admin > CI/CD > Runners with the `dhp` tag.
+--version && jq --version'`, and under Admin > CI/CD > Runners (or `GET /runners/all`) exactly one runner
+with the `dhp` tag is online. A second one, say a test runner someone left registered, takes jobs just the
+same and writes wherever its own `DHP_DATA` points, with nothing in the job log to say so.
 
 ## 5. Prepare the web root and publication workspace, once
 
@@ -176,8 +188,10 @@ sudo mkdir -p /srv/dhp && sudo chown gitlab-runner: /srv/dhp
 sudo -u gitlab-runner -H env DHP_DATA=/srv/dhp ci/setup-webroot.sh
 ```
 
-Idempotent, and it never overwrites a file it already wrote. `/srv/dhp` gets `webroot/`, `publication/`,
-`publisher-cache/`, `txcache-seed/` and `zips/`. The web root gets `publish-setup.json` (layout rule
+Idempotent, and it never overwrites a file it already wrote. It downloads `publisher.jar` (about 245 MB)
+from GitHub into `publisher-cache/` and clones three GitHub repositories, so on a slow link it is 15-20
+minutes; `PUBLISHER_JAR=/path/to/an/existing/publisher.jar` skips the download. `/srv/dhp` gets `webroot/`,
+`publication/`, `publisher-cache/`, `txcache-seed/` and `zips/`. The web root gets `publish-setup.json` (layout rule
 `uz.dhp.* -> https://dhp.uz/fhir/{3}`, covering both guides and any future one), empty `package-feed.xml`
 and `publication-feed.xml`, `package-registry.json`, placeholder `index.html` and `fhir/license.html`, and
 the vendored history assets under `fhir/assets-hist/`. `publication/` gets clones of
@@ -261,9 +275,10 @@ Check: pushing to `ci` creates no pipeline; a pipeline on `main` starts a `ci-bu
 
 ## 8. First continuous build
 
-Set `CI_BUILD_REPO_URL` as a CI/CD variable on both projects, to the public GitHub URL of that guide: the
-publish box cites the repository the build came from, and the default is `CI_PROJECT_URL`, your internal
-GitLab host, which should not appear on a public page. Then run a pipeline on `main` in each project
+Two project CI/CD variables to set on both projects before the first pipeline: `CI_BUILD_REPO_URL`, the
+public GitHub URL of that guide - the publish box cites the repository the build came from, and the
+default is `CI_PROJECT_URL`, your internal GitLab host, which should not appear on a public page - and
+`DHP_DATA`, only if the runner host uses a path other than `/srv/dhp`. Then run a pipeline on `main` in each project
 (Build > Pipelines > Run pipeline, or `infra/scripts/45-trigger-pipeline.sh core main`). Expect 20-25 min
 once the terminology cache is warm; the very first build on a host is cold and takes longer.
 
@@ -282,7 +297,9 @@ Publish oldest first, one at a time, waiting for each: the publisher rewrites ev
 publish box from `package-list.json`. `release.sh` refuses a version that already has a folder or a
 `package-list.json` entry, and one older than the newest published unless you pass `PUB_MODE=working`,
 which publishes into the version folder without taking over the canonical URL. Core has tags back to
-0.1.0 and each core release costs 73-93 min and about 2.7 GB, so decide how far back to go first.
+0.1.0 and each core release costs 73-93 min and about 2.7 GB, so decide how far back to go first. An
+integrations release is 48 min for the first version and 78 min once there is an earlier one to carry
+along.
 
 Old tags predate `.gitlab-ci.yml` and could not start a pipeline at all (core 0.1.0 to 0.6.0, integrations
 0.7.0 and 0.8.0). GitLab reports that as `The pipeline did not run. Review the workflow:rules
@@ -308,8 +325,9 @@ infra/scripts/45-trigger-pipeline.sh integration 0.9.0 nowait FAIL_ON_QA_ERRORS=
 
 When it fires, nothing is written to the web root; read `output/qa.json` from the job artifacts.
 
-Check after each release: `verify-site.sh` (step 10), and `https://dhp.uz/fhir/<ig>/package-list.json`
-lists the new version with `"current": true`.
+Check after each release: `https://dhp.uz/fhir/<ig>/package-list.json` lists the new version with
+`"current": true`, and from the second release on `verify-site.sh` (step 10) - it needs an older and a
+newer version, so after the very first release check the version folder and the publish box by hand.
 
 ## 10. Verifying the site
 
@@ -322,7 +340,9 @@ The last two arguments are the older and the newer of two published versions. It
 guide, exits non-zero if a required one is not 200, and checks the four publish-box statements (current
 published version, permanent home, superseded-by link, continuous build with an absolute source link),
 which are easy to get wrong and silent when they are. The only expected 301s are `/fhir/core` and
-`/fhir/integrations` without a trailing slash.
+`/fhir/integrations` without a trailing slash. The last section, "'Directory of published versions' links
+resolve", is informational: it follows the cross-guide links in the published pages and shows 404s for
+the other guide until that one is published too, without failing the run.
 
 ## 11. Troubleshooting
 
@@ -467,7 +487,8 @@ Per project it sets:
 
 All of it goes in over REST except the webhook token, which has no REST setter: that call is
 `$GITLAB_RAILS runner`, default `sudo gitlab-rails`, with the secret passed on stdin so it never appears
-in a process listing.
+in a process listing. `show` reads the token the same way, so it needs rails access too;
+`SHOW_WEBHOOK_TOKEN=0` leaves that line out and makes `show` pure REST.
 
 Check: `show` prints both projects side by side. Then force a pull, run
 `infra/scripts/60-mirror-ticker.sh health`, and compare tag counts against GitHub - a protected-ref rule
@@ -478,8 +499,9 @@ the mirror cannot satisfy deletes tags, so this is the one check not to skip.
 - A real webhook delivery from GitHub: the HMAC route was only exercised with hand-signed payloads.
 - A genuinely new upstream commit or tag arriving through the mirror: refs were deleted in GitLab and
   restored by a pull instead, which is the same code path.
-- A packaged `gitlab-runner` service running as the `gitlab-runner` user: the runner here was the static
-  binary run by hand as an ordinary user, with `DHP_DATA` pointing at that user's directory. The PATH note
-  in step 4 comes from that difference and is not proven on a service install.
+- A packaged `gitlab-runner` service running as the `gitlab-runner` user: every run here, including one
+  by someone following this README with no other help, used the static binary as an ordinary user with
+  `DHP_DATA` in that user's directory. The `environment = ["PATH=..."]` line was required there for a
+  SUSHI installed under `~/.npm-global`; a service install may or may not need it.
 - Your web server configuration: the site was only served by a stock nginx with the web root as its
   document root.
