@@ -189,9 +189,10 @@ sudo -u gitlab-runner -H env DHP_DATA=/srv/dhp ci/setup-webroot.sh
 ```
 
 Idempotent, and it never overwrites a file it already wrote. It downloads `publisher.jar` (about 245 MB)
-from GitHub into `publisher-cache/` and clones three GitHub repositories, so on a slow link it is 15-20
-minutes; `PUBLISHER_JAR=/path/to/an/existing/publisher.jar` skips the download. `/srv/dhp` gets `webroot/`,
-`publication/`, `publisher-cache/`, `txcache-seed/` and `zips/`. The web root gets `publish-setup.json` (layout rule
+from GitHub into `publisher-cache/` and clones three GitHub repositories;
+`PUBLISHER_JAR=/path/to/an/existing/publisher.jar` skips the download. `/srv/dhp` gets `webroot/`,
+`publication/`, `publisher-cache/`, `txcache-seed/` and `zips/` - it is the published site, so back it up
+like one. The web root gets `publish-setup.json` (layout rule
 `uz.dhp.* -> https://dhp.uz/fhir/{3}`, covering both guides and any future one), empty `package-feed.xml`
 and `publication-feed.xml`, `package-registry.json`, placeholder `index.html` and `fhir/license.html`, and
 the vendored history assets under `fhir/assets-hist/`. `publication/` gets clones of
@@ -447,16 +448,6 @@ off and anything else means on, so a typo leaves the gate on), `GATE_WARM_TXCACH
 (`0`), `ROLLBACK_ASSUME_YES` (`0`), `KEEP_ZIP` (`0`), `NEED_TEMP_GB` and `NEED_WEB_GB` (`20`),
 `WEB_LOCK_WAIT` (`21600`), `PUBLISHER_VERSION` (unset, latest), `PUBLISHER_REFRESH` (`0`), `STAGING_DIR`
 (`$WEB_ROOT/.staging`), `HIST_ASSETS_DIR` (`$WEB_ROOT/fhir/assets-hist`).
-
-## 13. State that lives only in GitLab and on the runner host
-
-A fresh deployment, a restored backup or a rebuilt runner inherits none of this: the hardening settings on
-both projects; the runner registration and its `config.toml` (`concurrent = 1`, the `dhp` tag, any `PATH`
-line); the toolchain on the runner host; `CI_BUILD_REPO_URL`, `DHP_CI_REF` and the resource-group mode of
-steps 7 and 8; the webhook secret and the cron line of step 3; and `$DHP_DATA` itself, which is the
-published site - back it up like one. Two things need attention over time: outgoing mail enabled or
-`60-mirror-ticker.sh health` on a schedule, because a hard-failed mirror is otherwise completely silent,
-and the two mirror tokens rotated before they expire, staying `api`-scoped at Maintainer.
 
 ## Optional: harden the two projects
 
