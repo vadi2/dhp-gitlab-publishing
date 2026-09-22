@@ -21,47 +21,24 @@
 #   templates/    site-specific history/index/search templates
 #   temp/         publisher scratch space
 #
-# Usage: setup-webroot.sh
-# Env:   WEB_ROOT, PUBLICATION_DIR, SITE_URL, SITE_ORG, SITE_TITLE,
-#        WEB_SERVER_TYPE, CLONE_XML_JSON, PUBLISHER_JAR, HIST_ASSETS_DIR,
-#        OFFLINE
-#
-# Unlike ci-build.sh and release.sh this script does not require WEB_ROOT to be
-# a mount point: preparing a plain directory on a workstation is a legitimate
-# way to run it.
+# Usage: DHP_DATA=/srv/dhp setup-webroot.sh
+# Env:   DHP_DATA (or WEB_ROOT and PUBLICATION_DIR), SITE_URL, SITE_ORG,
+#        SITE_TITLE, WEB_SERVER_TYPE, CLONE_XML_JSON, PUBLISHER_JAR,
+#        HIST_ASSETS_DIR, OFFLINE
 
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-# common.sh defaults IG_HISTORY, IG_REGISTRY, PUB_TEMPLATES and PUB_TEMP to
-# /publication/..., and it is sourced before PUBLICATION_DIR is read below - so
-# by then all four are already set and `${IG_HISTORY:-$PUBLICATION_DIR/...}`
-# keeps the /publication default. PUBLICATION_DIR was therefore only honoured
-# for the banner at the bottom: the clones, templates and temp folder still went
-# to /publication, and a run with PUBLICATION_DIR=/elsewhere produced a web root
-# whose prerequisites release.sh could not find. Capture what the caller set
-# before common.sh can supply a default for it. (F11)
-_ENV_IG_HISTORY="${IG_HISTORY:-}"
-_ENV_IG_REGISTRY="${IG_REGISTRY:-}"
-_ENV_PUB_TEMPLATES="${PUB_TEMPLATES:-}"
-_ENV_PUB_TEMP="${PUB_TEMP:-}"
-
 # shellcheck source=lib/common.sh
 source "$HERE/lib/common.sh"
 
-PUBLICATION_DIR="${PUBLICATION_DIR:-/publication}"
 SITE_ORG="${SITE_ORG:-Ministry of Health of the Republic of Uzbekistan}"
 SITE_TITLE="${SITE_TITLE:-Uzbekistan Digital Health Platform FHIR Implementation Guides}"
 WEB_SERVER_TYPE="${WEB_SERVER_TYPE:-apache}"   # apache covers apache and nginx
 CLONE_XML_JSON="${CLONE_XML_JSON:-false}"
 OFFLINE="${OFFLINE:-0}"
 
-IG_HISTORY="${_ENV_IG_HISTORY:-$PUBLICATION_DIR/ig-history}"
-IG_REGISTRY="${_ENV_IG_REGISTRY:-$PUBLICATION_DIR/ig-registry}"
-PUB_TEMPLATES="${_ENV_PUB_TEMPLATES:-$PUBLICATION_DIR/templates}"
-PUB_TEMP="${_ENV_PUB_TEMP:-$PUBLICATION_DIR/temp}"
-
-mkdir -p "$WEB_ROOT" "$PUBLICATION_DIR" "$PUB_TEMPLATES" "$PUB_TEMP"
+mkdir -p "$WEB_ROOT" "$PUBLICATION_DIR" "$PUB_TEMPLATES" "$PUB_TEMP" "$PUBLISHER_CACHE" "$ZIPS_DIR" \
+         "$DHP_DATA/txcache-seed"
 
 clone_if_missing() {
   local url="$1" dir="$2"

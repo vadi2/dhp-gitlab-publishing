@@ -5,6 +5,9 @@ permanent versioned release, the root of each guide serves the newest release, a
 a version list and package feeds. The continuous build of `main` keeps running, at a new address. Do the
 steps in order; each ends with a check.
 
+No containers anywhere: the pipeline is shell scripts run by a GitLab runner with the shell executor, on a
+host that has the same toolchain the guides' GitHub Actions use.
+
 ## 1. What you get
 
 These must answer 200 when you are done, for `core` and again for `integrations`:
@@ -26,24 +29,25 @@ the root serves the latest release.
 
 ## 2. Prerequisites
 
-- GitLab Premium or Ultimate; pull mirroring is not in Free/CE. Known to work on GitLab EE 19.4.0-ee,
-  Runner 19.4.0, Docker 28.3.3. An activation code is a cloud licence and needs the instance to reach
+- GitLab Premium or Ultimate; pull mirroring is not in Free/CE. Known to work on GitLab EE 19.4.0-ee and
+  Runner 19.4.0. An activation code is a cloud licence and needs the instance to reach
   `customers.gitlab.com`; an instance with no outbound internet needs a licence *file*.
-- One runner, docker executor, `concurrent = 1`, tag `dhp`. No memory limit, or one above 12 GB - the
-  publisher runs with a 12 GB heap. `docker compose` on the GitLab host too, for the mirror ticker.
-- Disk: about 2.7 GB in the web root per core release, half that per integrations release, plus 12 GB free
-  for temp, which peaks around 11 GB and grows as versions accumulate, because publishing version N copies
-  every earlier version through temp. Caches add a few GB.
-- Outbound network from job containers:
+- One runner, shell executor, `concurrent = 1`, tag `dhp` (step 4). Its host needs Java 21, Node with
+  `fsh-sushi` (`npm install -g fsh-sushi`), Ruby with `jekyll`, `git`, `curl`, `jq`, `rsync`, `unzip` and
+  `zip` - what the guides' GitHub Actions install - and 16 GB of RAM: the publisher runs with a 12 GB heap.
+- Disk on the runner host: about 2.7 GB in the web root per core release, half that per integrations
+  release, plus 12 GB free for temp, which peaks around 11 GB and grows as versions accumulate, because
+  publishing version N copies every earlier version through temp. Caches add a few GB.
+- Outbound network from the runner host:
 
   | Host | For |
   |---|---|
-  | `github.com` | mirroring, `publisher.jar`, and the clones step 6 makes (HL7/fhir-ig-history-template, FHIR/ig-registry, HL7/fhir-web-templates) |
+  | `github.com` | mirroring, `publisher.jar`, and the clones step 5 makes (HL7/fhir-ig-history-template, FHIR/ig-registry, HL7/fhir-web-templates) |
   | `tx.fhir.org` | terminology validation |
   | `packages.fhir.org` | FHIR packages and the IG template `fhir2.base.template#current`. Its root answers 404, so test with a real package path, not `/` |
   | `packages2.fhir.org` | the publisher's secondary package server |
-  | `hl7.org` | not needed by readers - `history.js` is vendored into the web root (step 7) |
-  | Docker Hub, `registry.npmjs.org`, Ubuntu apt | only when building the image in step 4 |
+  | `hl7.org` | not needed by readers - `history.js` is vendored into the web root (step 6) |
+  | `registry.npmjs.org`, `rubygems.org`, apt | only when installing the toolchain |
   | `customers.gitlab.com` | only for an online activation code |
 
 ## 3. Mirror GitHub into GitLab
@@ -65,7 +69,7 @@ curl --header "PRIVATE-TOKEN: $TOKEN" -X PUT \
 settles; its forced pull sends `force=true`, which also clears a mirror that has already hard-failed.
 
 Check: `GET /projects/<id>/mirror/pull` reports `update_status: finished` and `last_error: null`, and the
-branch and tag counts match GitHub. The GitLab-only `ci` branch from step 8 survives mirror updates: a ref
+branch and tag counts match GitHub. The GitLab-only `ci` branch from step 7 survives mirror updates: a ref
 deleted in GitLab comes back on the next pull, a GitLab-only ref is left alone.
 
 GitLab's own polling is enough: a tag is picked up within 30 minutes and the pipeline starts on its own.
@@ -81,10 +85,11 @@ the narrowest thing that works on 19.4, since a Developer-level token gets 403 o
 1. A GitHub push webhook, if GitHub can reach the instance. Payload URL
    `https://<gitlab>/api/v4/projects/<id>/mirror/pull` with no query string, content type
    `application/json`, "Just the push event", and GitHub's Secret field set to that project's
-   `external_webhook_token` from the hardening section - GitLab verifies GitHub's `X-Hub-Signature`, so no adapter is
-   needed. Never put `?private_token=<token>` in a webhook URL: that is a full API credential, stored in
-   GitHub's webhook configuration and echoed in its delivery log. To test without GitHub - a correct
-   signature answers 200, a wrong one 404 (an invalid signature, not a wrong URL), a missing one 401:
+   `external_webhook_token` from the hardening section - GitLab verifies GitHub's `X-Hub-Signature`, so no
+   adapter is needed. Never put `?private_token=<token>` in a webhook URL: that is a full API credential,
+   stored in GitHub's webhook configuration and echoed in its delivery log. To test without GitHub - a
+   correct signature answers 200, a wrong one 404 (an invalid signature, not a wrong URL), a missing one
+   401:
 
    ```sh
    sig=$(openssl dgst -sha1 -hmac "$GITHUB_WEBHOOK_SECRET_1" -hex < payload.json | sed 's/^.* //')
@@ -93,61 +98,23 @@ the narrowest thing that works on 19.4, since a Developer-level token gets 403 o
      --header "X-Hub-Signature: sha1=$sig" --data-binary @payload.json
    ```
 
-2. A ticker forcing a pull on a schedule, for when GitHub cannot reach the instance. As a compose service
-   the docker daemon brings it back after a reboot and a failing pull shows up in `docker ps`. Add this to
-   your compose file, with `infra/mirror-tick/tick.sh` beside it:
-
-   ```yaml
-     mirror-tick:
-       image: ${MIRROR_TICK_IMAGE:-dhp-ig-publisher:local}
-       container_name: dhp-gl-mirror-tick
-       restart: unless-stopped
-       depends_on:
-         - gitlab
-       networks:
-         - dhp-gl-net
-       entrypoint: ["/bin/sh", "/usr/local/bin/tick.sh"]
-       user: ${MIRROR_TICK_USER:-1001:1001}
-       environment:
-         API: ${GITLAB_EXTERNAL_URL}/api/v4
-         INTERVAL: ${MIRROR_TICK_INTERVAL:-15}
-         TOKEN_FILE: /run/secrets/mirror-tokens
-       volumes:
-         - ./mirror-tick/tick.sh:/usr/local/bin/tick.sh:ro
-         - ./.mirror-tokens:/run/secrets/mirror-tokens:ro
-       healthcheck:
-         test: ["CMD-SHELL", "test ! -f /tmp/mirror-tick-unhealthy"]
-         interval: 30s
-         timeout: 5s
-         retries: 2
-         start_period: 30s
-   ```
-
-   `networks:` must be the network your GitLab service is on, and `container_name` must match
-   `60-mirror-ticker.sh`, which has `dhp-gl-mirror-tick` fixed in it - rename in both or in neither. Drive
-   the service through the wrapper, never `docker compose` directly:
+2. A cron job forcing a pull every minute, for when GitHub cannot reach the instance:
 
    ```sh
-   infra/scripts/60-mirror-ticker.sh start    # create tokens, write the token file, compose up --no-deps
+   infra/scripts/60-mirror-ticker.sh setup    # creates the two tokens into infra/.env, prints the cron line
    infra/scripts/60-mirror-ticker.sh health   # exits 1 if anything is wrong - put this in a monitor
-   infra/scripts/60-mirror-ticker.sh stop     # stops this one service, not the stack
    ```
 
-   `once`, `status` and `logs` are there too. Notes on the running service:
+   The line `setup` prints goes in the crontab of the user that owns `infra/.env`:
 
-   - The wrapper exports `MIRROR_TICK_USER="$(id -u):$(id -g)"` so the container can read the token file,
-     which is mode 600 and owned by whoever ran `start`. A bare `docker compose up -d mirror-tick` falls
-     back to the literal `1001:1001` and the loop then flags itself unhealthy without ever pulling. If a
-     pre-compose `docker run` ticker is still around, `start` refuses until you
-     `docker rm -f dhp-gl-mirror-tick`.
-   - Tokens arrive on the mounted `infra/.mirror-tokens` (written from `.env` by `start`), not through
-     `environment:`, where `docker inspect` would hand them to anyone in the docker group.
-   - The loop writes `/tmp/mirror-tick-unhealthy` on any non-200 forced pull and removes it on a 200, so
-     the healthcheck fires within a minute of mirroring breaking. It sends `force=true`, because an
-     unforced tick after a failed pull is a no-op for 30 minutes and 14 consecutive failures hard-fail the
-     mirror, silently if outgoing mail is off.
-   - `health` exits 1 on a mirror error, a mirror that never updated, a last success older than
-     `MIRROR_STALE_SECONDS` (600) or an expired token, and warns `MIRROR_EXPIRY_WARN_DAYS` (14) out.
+   ```
+   * * * * * /path/to/infra/scripts/60-mirror-ticker.sh once >/dev/null 2>&1
+   ```
+
+   `once` and `status` are there too. `once` sends `force=true`, because an unforced pull after a failed
+   one is a no-op for 30 minutes and 14 consecutive failures hard-fail the mirror, silently if outgoing
+   mail is off. `health` exits 1 on a mirror error, a mirror that never updated, a last success older than
+   `MIRROR_STALE_SECONDS` (600) or an expired token, and warns `MIRROR_EXPIRY_WARN_DAYS` (14) out.
 
    Forced pulls are rate-limited by the plan limit `pull_mirror_interval_seconds` (default 300), which is
    not in the plan-limits API and must be lowered from the rails console:
@@ -156,8 +123,8 @@ the narrowest thing that works on 19.4, since a Developer-level token gets 403 o
    gitlab-rails runner 'Plan.default.actual_limits.update!(pull_mirror_interval_seconds: 30)'
    ```
 
-   Tick faster than the limit, not at it - a 30 s limit with a 15 s tick gives updates about a minute
-   apart. Pulls that change nothing create no pipelines.
+   Set it below the cron interval, not at it - 30 s under a one-minute cron. Pulls that change nothing
+   create no pipelines.
 
 </details>
 
@@ -165,93 +132,57 @@ Fallback for an unlicensed or CE instance, and for the initial population: `infr
 both` fetches both repos from GitHub into bare mirrors and pushes branches and tags into GitLab without
 pruning, so GitLab-only refs survive. Run it from cron.
 
-## 4. Build the job image
+## 4. Runner
+
+Install `gitlab-runner` from GitLab's package repository on the build host, install the toolchain from
+step 2 where the `gitlab-runner` user can see it, then register a shell-executor runner:
 
 ```sh
-docker build -t dhp-ig-publisher:local ci/
+sudo gitlab-runner register --non-interactive --url https://<gitlab> --token <runner authentication token> \
+  --executor shell --tag-list dhp
 ```
 
-`hl7fhir/ig-publisher-base` plus a pinned SUSHI, `jq`, `rsync`, `unzip`, `zip`, running as `USER 1001:1001`
-(step 5). `publisher.jar` is not in the image; the pipeline downloads it into a mounted cache. Put the image
-on every runner host (`pull_policy = ["if-not-present"]`), or push it to your registry and change the
-`image:` line in `ci/gitlab-ci.yml`. Check: `docker run --rm dhp-ig-publisher:local sushi --version`.
-
-## 5. Runner configuration
+`/etc/gitlab-runner/config.toml` then needs one edit, `concurrent = 1` at the top, and `sudo gitlab-runner
+restart`:
 
 ```toml
 concurrent = 1
 
 [[runners]]
-  executor = "docker"
-  environment = ["FF_DISABLE_UMASK_FOR_DOCKER_EXECUTOR=true"]
-  [runners.docker]
-    image = "dhp-ig-publisher:local"
-    allowed_images = ["dhp-ig-publisher:local", "dhp-ig-publisher:*"]
-    disable_entrypoint_overwrite = true
-    pull_policy = ["if-not-present"]
-    user = "<uid>:<gid>"
-    volumes = [
-      "/srv/dhp/webroot:/web:rw",
-      "/srv/dhp/fhir-package-cache:/fhir-cache:rw",
-      "/srv/dhp/txcache-seed:/txcache-seed-root:rw",
-      "/srv/dhp/publisher-cache:/publisher-cache:rw",
-      "/srv/dhp/publication:/publication:rw",
-      "/srv/dhp/zips:/zips:rw",
-    ]
+  executor = "shell"
+  # only if the tools are not on the runner's default PATH, e.g. sushi installed with nvm or in ~/.npm-global
+  # environment = ["PATH=/home/gitlab-runner/.npm-global/bin:/usr/local/bin:/usr/bin:/bin"]
 ```
 
-- `user` must be the uid:gid owning those host directories - read it with
-  `stat -c '%u:%g' /srv/dhp/webroot`, do not copy a number. GitLab CI never passes `--user`, so without it
-  the job runs as the image's own `USER` (`1001:1001` in `ci/Dockerfile`, the backstop for callers that
-  pass none) while `/web` is mounted read-write.
-- `FF_DISABLE_UMASK_FOR_DOCKER_EXECUTOR=true` goes with it: the helper container that clones the repo
-  always runs as root and the runner otherwise only applies `umask 0000`, leaving anything already in the
-  cached `/builds` volume root-owned; git then fails in `before_script` with `unable to append to
-  '.git/logs/refs/...': Permission denied`.
-- `allowed_images` and `disable_entrypoint_overwrite` stop a `.gitlab-ci.yml` on any ref naming its own
-  image or overriding the entrypoint while `/web` is mounted read-write.
 - `concurrent = 1` is load-bearing twice: parallel builds collide on the FHIR package cache lock
   (`#dev.lock`), and it is the only thing stopping a core job and an integrations job writing the shared
   web root at once, since `resource_group` is project-scoped.
-- The container paths are the defaults in `ci/lib/common.sh`, so no job needs a path override; host paths
-  are absolute because job containers are spawned on the host docker daemon. `/txcache-seed-root` must be
-  read-write - each build hands its warmed terminology cache back, and read-only every build pays a cold
-  terminology pass, hours on an empty cache.
-- Generating `config.toml` from a script is a trap: it carries host-specific paths and the runner's token,
-  and replacing the mount list under the build scripts fails silently - `ci-build.sh` writes `/web/...`
-  inside the discarded job container, reports the published URL and exits 0.
+- Jobs run as the `gitlab-runner` user, with its home directory: `~/.fhir` is the FHIR package cache, and
+  everything the pipeline keeps between jobs lives under `$DHP_DATA` (default `/srv/dhp`, a `variables:`
+  entry in `ci/gitlab-ci.yml`; override it as a project CI/CD variable), which that user has to own
+  (step 5). No shared volumes, no uid mapping.
+- The shell executor runs the job in a non-login shell, so tools installed through a version manager are
+  not found unless `environment = ["PATH=..."]` names them. Install them system-wide, or set the line.
 
-The runner does not reload `config.toml`, so restart it when pipelines are idle
-(`docker restart <runner container>`); `user` does not chown what is already there, so once, afterwards:
+Check, as the runner user: `sudo -u gitlab-runner -H bash -c 'java -version && sushi --version && jekyll
+--version && jq --version'`, and the runner shows up green under Admin > CI/CD > Runners with the `dhp` tag.
 
-```sh
-docker volume ls -q --filter name=runner- | xargs -r docker volume rm
-docker run --rm -u 0:0 -v /srv/dhp:/d alpine:latest chown -R <uid>:<gid> /d
-```
+## 5. Prepare the web root and publication workspace, once
 
-Check the mounts against a running job, not `config.toml` - a runner not restarted after an edit still
-uses the old list. `/builds` and `/home/publisher/ig` also appear and are expected:
+On the runner host, as the runner user, with a checkout of this repository:
 
 ```sh
-docker inspect "$(docker ps --format '{{.Names}}' | grep -- '-concurrent-.*-build$' | head -1)" \
-  --format '{{range .Mounts}}{{.Source}} -> {{.Destination}} rw={{.RW}}{{"\n"}}{{end}}'
+sudo mkdir -p /srv/dhp && sudo chown gitlab-runner: /srv/dhp
+sudo -u gitlab-runner -H env DHP_DATA=/srv/dhp ci/setup-webroot.sh
 ```
 
-## 6. Prepare the web root and publication workspace, once
-
-On the machine that owns the web root, with a checkout of either guide to hand:
-
-```sh
-DATA_DIR=/srv/dhp WEB_ROOT_HOST=/srv/dhp/webroot \
-  ci/run.sh /path/to/a/guide/checkout setup
-```
-
-Idempotent, and it never overwrites a file it already wrote. The web root gets `publish-setup.json` (layout
-rule `uz.dhp.* -> https://dhp.uz/fhir/{3}`, covering both guides and any future one), empty
-`package-feed.xml` and `publication-feed.xml`, `package-registry.json`, placeholder `index.html` and
-`fhir/license.html`, and the vendored history assets under `fhir/assets-hist/`. `/srv/dhp/publication` gets
-clones of HL7/fhir-ig-history-template and FHIR/ig-registry, a `templates/` seeded from
-HL7/fhir-web-templates, and an empty `temp/`. Two content jobs are yours:
+Idempotent, and it never overwrites a file it already wrote. `/srv/dhp` gets `webroot/`, `publication/`,
+`publisher-cache/`, `txcache-seed/` and `zips/`. The web root gets `publish-setup.json` (layout rule
+`uz.dhp.* -> https://dhp.uz/fhir/{3}`, covering both guides and any future one), empty `package-feed.xml`
+and `publication-feed.xml`, `package-registry.json`, placeholder `index.html` and `fhir/license.html`, and
+the vendored history assets under `fhir/assets-hist/`. `publication/` gets clones of
+HL7/fhir-ig-history-template and FHIR/ig-registry, a `templates/` seeded from HL7/fhir-web-templates, and
+an empty `temp/`. Two content jobs are yours:
 
 - `templates/` is HL7's site chrome, so released pages and `history.html` carry the HL7 logo and a link to
   hl7.org. Edit `preamble.template`, `header.template`, `postamble.template` and the images in place;
@@ -262,25 +193,29 @@ HL7/fhir-web-templates, and an empty `temp/`. Two content jobs are yours:
 Check: the four machine-readable files exist in the web root and `publication/` has its four
 subdirectories. `release.sh` refuses to start without them.
 
-## 7. Web server
+## 6. Web server
 
-Serve the web root at `https://dhp.uz/`, so `/fhir/core/...` maps to `<webroot>/fhir/core/...`, with:
+Serve `/srv/dhp/webroot` at `https://dhp.uz/`, so `/fhir/core/...` maps to `webroot/fhir/core/...`, with:
 
 - `.tgz` served as `application/gzip`; `.json` and `.xml` from the stock mime map.
 - `Cache-Control: no-store`, at least for the continuous build - it is rewritten on every commit to `main`.
 - No dependency on `hl7.org`: `history.html` renders its version table client-side from `history.js` and
-  `history-cm.js`, which step 6 vendors under `fhir/assets-hist/` and the pipeline points every
+  `history-cm.js`, which step 5 vendors under `fhir/assets-hist/` and the pipeline points every
   `history.html` at.
 - Canonical-URL resolution (`https://dhp.uz/fhir/core/StructureDefinition/X` returning the page or the
   JSON depending on `Accept`) is a web server job; the publisher cannot do it and the pipeline does not try.
 
-## 8. Put the pipeline on the `ci` branch
+The web server only reads; the runner user is the only writer. If they are different machines, the web
+root has to be a share the runner host mounts read-write - the pipeline swaps directories into place with
+`mv`, so it must be one filesystem.
+
+## 7. Put the pipeline on the `ci` branch
 
 The pipeline lives on a GitLab-only `ci` branch, so nothing in the mirrored content changes. Two mechanisms
-point there: `ci_config_path` (step 10, or the hardening script), and a `.gitlab-ci.yml` in each repo that only `include:`s the
-same file, as a fallback if `ci_config_path` is ever cleared. Jobs fetch the branch at run time and unpack
-`ci/` outside the work tree, so the checkout stays as the tag has it - `-go-publish` copies the whole
-source folder into the release.
+point there: `ci_config_path` (step 9, or the hardening script), and a `.gitlab-ci.yml` in each repo that
+only `include:`s the same file, as a fallback if `ci_config_path` is ever cleared. Jobs fetch the branch at
+run time and unpack `ci/` outside the work tree, so the checkout stays as the tag has it - `-go-publish`
+copies the whole source folder into the release.
 
 1. Create the branch and protect it, so a stray push cannot clobber it:
 
@@ -306,8 +241,8 @@ source folder into the release.
 
    ```
    /.gitlab-ci.yml   <- ci/gitlab-ci.yml
-   /ci/ci-build.sh  /ci/release.sh  /ci/setup-webroot.sh  /ci/verify-site.sh
-   /ci/run.sh  /ci/lib/common.sh  /ci/Dockerfile  /ci/entrypoint.sh
+   /ci/ci-build.sh  /ci/release.sh  /ci/release-rollback.sh  /ci/setup-webroot.sh  /ci/verify-site.sh
+   /ci/lib/common.sh
    ```
 
    `infra/scripts/36-publish-ci-scripts.sh [core|integration|both]` does it through the API, idempotently.
@@ -320,20 +255,17 @@ pipelines; `ci-build` on the default branch, deploying to `/fhir/<ig>/ci-build/`
 tags matching `^\d+\.\d+\.\d+$` (bare semver, no `v` prefix), which builds and then runs `-go-publish`,
 6 h timeout. Both jobs carry `resource_group: dhp-webroot` and `interruptible: false`, and keep
 `output/qa.html`, `qa.txt` and `qa.json` as artifacts for a week. Changing a script later is a commit on
-the `ci` branch - no image rebuild, nothing to install on the runner.
-
-`ci/.gitlab-ci.yml` is the same pipeline for the arrangement where `ci/` is committed into the IG
-repository itself, for use once the MOH owns the repositories. Do not publish it to the `ci` branch: a
-project with both definitions would have two pipelines.
+the `ci` branch - nothing to install on the runner.
 
 Check: pushing to `ci` creates no pipeline; a pipeline on `main` starts a `ci-build` job.
 
-## 9. First continuous build
+## 8. First continuous build
 
 Set `CI_BUILD_REPO_URL` as a CI/CD variable on both projects, to the public GitHub URL of that guide: the
 publish box cites the repository the build came from, and the default is `CI_PROJECT_URL`, your internal
 GitLab host, which should not appear on a public page. Then run a pipeline on `main` in each project
-(Build > Pipelines > Run pipeline, or `infra/scripts/45-trigger-pipeline.sh core main`). Expect 20-25 min.
+(Build > Pipelines > Run pipeline, or `infra/scripts/45-trigger-pipeline.sh core main`). Expect 20-25 min
+once the terminology cache is warm; the very first build on a host is cold and takes longer.
 
 Check: `https://dhp.uz/fhir/core/ci-build/en/index.html` answers 200 and its publish box says the guide is
 a continuous build, citing that absolute URL - not "Local Development build", not "Publish Box goes here".
@@ -344,7 +276,7 @@ instance. Both jobs share `resource_group: dhp-webroot`, whose default mode is `
 together are not guaranteed to publish in order, and publishing 0.9.1 after 0.9.2 would leave the canonical
 URL serving 0.9.1. `oldest_first` fixes it, and the API only knows a resource group once a job has used it.
 
-## 10. Backfill the versions you want to keep
+## 9. Backfill the versions you want to keep
 
 Publish oldest first, one at a time, waiting for each: the publisher rewrites every earlier version's
 publish box from `package-list.json`. `release.sh` refuses a version that already has a folder or a
@@ -376,14 +308,14 @@ infra/scripts/45-trigger-pipeline.sh integration 0.9.0 nowait FAIL_ON_QA_ERRORS=
 
 When it fires, nothing is written to the web root; read `output/qa.json` from the job artifacts.
 
-Check after each release: `verify-site.sh` (step 11), and `https://dhp.uz/fhir/<ig>/package-list.json`
+Check after each release: `verify-site.sh` (step 10), and `https://dhp.uz/fhir/<ig>/package-list.json`
 lists the new version with `"current": true`.
 
-## 11. Verifying the site
+## 10. Verifying the site
 
 ```sh
-VERIFY_BASE=https://dhp.uz ci/verify-site.sh - core         0.9.1 0.9.2
-VERIFY_BASE=https://dhp.uz ci/verify-site.sh - integrations 0.8.0 0.9.0
+ci/verify-site.sh https://dhp.uz core         0.9.1 0.9.2
+ci/verify-site.sh https://dhp.uz integrations 0.8.0 0.9.0
 ```
 
 The last two arguments are the older and the newer of two published versions. It checks about 30 URLs per
@@ -392,50 +324,59 @@ published version, permanent home, superseded-by link, continuous build with an 
 which are easy to get wrong and silent when they are. The only expected 301s are `/fhir/core` and
 `/fhir/integrations` without a trailing slash.
 
-## 12. Troubleshooting
+## 11. Troubleshooting
 
 - A tag produced no pipeline, with "Review the workflow:rules configuration": that ref has no
-  `.gitlab-ci.yml`. Set `ci_config_path` (step 10).
+  `.gitlab-ci.yml`. Set `ci_config_path` (step 9).
 - Every pipeline fails at once on a missing configuration file or an unresolvable `include:`: the `ci`
   branch does not exist yet, is renamed, or the project path does not match.
+- The job dies in `before_script` or at `require_web_root`: `$DHP_DATA/webroot` is missing, not owned by
+  the runner user, or has no `publish-setup.json` - step 5 was skipped or run as the wrong user, or
+  `DHP_DATA` on the project does not match the host.
+- `sushi: command not found` or `jekyll: command not found` in the job log while both work in your own
+  shell: the runner's non-login shell has another PATH. Set `environment = ["PATH=..."]` (step 4).
 - Tags or commits stopped arriving and no job failed: the mirror is hard-failed, which is silent with
   outgoing mail off. `60-mirror-ticker.sh health` names it; after a protected-ref change check the tag
   counts too (hardening section).
-- A pipeline is rejected when you pass a variable on the Run pipeline form: that needs Owner once the projects are hardened.
+- A pipeline is rejected when you pass a variable on the Run pipeline form: that needs Owner once the
+  projects are hardened.
 - The published build reports more errors than the pipeline's build did: expected, `-go-publish` rebuilds
   with `-resetTx` and asks tx.fhir.org questions the warm CI build did not. Both numbers are in the job
   log, the detail in `https://dhp.uz/fhir/<ig>/qa.html`, and it does not fail on them.
-- A build takes hours instead of 25 minutes: the terminology cache is cold. Check `/txcache-seed-root` is
-  mounted read-write and the log does not say "not writable, not saving".
+- A build takes hours instead of 25 minutes: the terminology cache is cold. Check
+  `$DHP_DATA/txcache-seed/<package id>/` is filling up and the log does not say "not writable, not saving".
+- The ci-build dies with a `NullPointerException` in `FilesystemPackageCacheManager`: `-auto-ig-build`
+  switches the publisher to the machine-wide package cache `/var/lib/.fhir`, which the runner user cannot
+  create. `ci-build.sh` passes `-package-cache-folder "$HOME/.fhir"` for that; a hand-run build without it
+  is the usual cause.
 - The ci-build publish box says "Local Development build", or the job dies in the publish-box check: the
   build did not get `-auto-ig-build`, or `-repo` got something that is not an absolute URL.
 - `GET /projects/<id>/mirror/pull` says `update_status: none` with null timestamps: not a failure, the
   mirror worker has not run yet.
 
-## 13. The scripts in this directory
+## 12. The scripts in this directory
 
 ```
-ci/Dockerfile                        build image (SUSHI pinned, jq, rsync, own entrypoint)
-ci/entrypoint.sh                     image entrypoint; GitLab CI replaces it, so lib/common.sh repeats it
 ci/lib/common.sh                     shared helpers; reads sushi-config.yaml for everything IG-specific
-ci/setup-webroot.sh                  one-off web root + publication workspace (step 6)
+ci/setup-webroot.sh                  one-off $DHP_DATA layout, web root + publication workspace (step 5)
 ci/ci-build.sh                       build and deploy the continuous build
-ci/release.sh <version>              verify, build, -go-publish (QA gate opt-in, step 10)
+ci/release.sh <version>              verify, build, -go-publish (QA gate opt-in, step 9)
 ci/release-rollback.sh <version>     undo one publication in the web root
-ci/verify-site.sh                    curl the URLs that must work (step 11)
-ci/run.sh                            docker run wrapper with the CI volume layout
+ci/verify-site.sh                    curl the URLs that must work (step 10)
 ci/gitlab-ci.yml                     the pipeline, as /.gitlab-ci.yml on the `ci` branch
-ci/.gitlab-ci.yml                    same pipeline for a repo that carries ci/ itself (step 8)
 infra/scripts/lib.sh                 shared env + API helpers for the scripts below
 infra/scripts/38-harden-projects.sh  apply|show the project settings of the hardening section
-infra/scripts/37-resource-group-mode.sh  set dhp-webroot to oldest_first (step 9)
+infra/scripts/37-resource-group-mode.sh  set dhp-webroot to oldest_first (step 8)
 infra/scripts/enable-pull-mirror.sh  turn on pull mirroring for both projects
-infra/scripts/60-mirror-ticker.sh    start|stop|health|status|once|logs - the mirror ticker
-infra/mirror-tick/tick.sh            the ticker loop, mounted read-only into the container
+infra/scripts/60-mirror-ticker.sh    setup|once|status|health - forced mirror pulls from cron
 infra/scripts/manual-sync.sh         CE/unlicensed fallback: fetch GitHub, push to GitLab
 infra/scripts/45-trigger-pipeline.sh trigger a pipeline on a ref, optionally with variables
 infra/scripts/36-publish-ci-scripts.sh push ci/ to the `ci` branch of both projects
 ```
+
+The `ci/*` scripts run by hand exactly as the pipeline runs them, from a checkout of a guide:
+`DHP_DATA=/srv/dhp ci/ci-build.sh`, `DHP_DATA=/srv/dhp ci/release.sh 0.9.1`. Run them as the runner user,
+since it owns everything they write.
 
 The `infra/scripts/*` ones all source `lib.sh`, which reads an `infra/.env` beside the `scripts/`
 directory and exits if it is missing. No file with real values ships here; create one with these keys:
@@ -454,52 +395,46 @@ GITLAB_HTTP_PORT=<port>       # manual-sync.sh only
 ```
 
 Optional, all with working defaults: `GITHUB_WEBHOOK_SECRET_<project id>` (per project, enables the HMAC
-webhook route in step 3 - generate with `openssl rand -hex 16`), `MIRROR_TICK_INTERVAL` and
-`MIRROR_TICK_IMAGE` (read by the compose service), `MIRROR_STALE_SECONDS` and `MIRROR_EXPIRY_WARN_DAYS`
-(thresholds for `health`), `MAIN_PUSH_ACCESS_LEVEL` and `MAIN_MERGE_ACCESS_LEVEL` (hardening, default 40),
-`GITLAB_CONTAINER`, `RUNNER_JOB_USER`. `60-mirror-ticker.sh` writes `CORE_MIRROR_TOKEN` and
-`INTEGRATION_MIRROR_TOKEN` back into `.env` when it creates the project access tokens, and renders both
-into `infra/.mirror-tokens` (mode 600); both files are gitignored.
+webhook route in step 3 - generate with `openssl rand -hex 16`), `MIRROR_STALE_SECONDS` and
+`MIRROR_EXPIRY_WARN_DAYS` (thresholds for `health`), `MAIN_PUSH_ACCESS_LEVEL` and
+`MAIN_MERGE_ACCESS_LEVEL` (hardening, default 40), `GITLAB_RAILS` (how `38-harden-projects.sh` reaches the
+rails console, default `sudo gitlab-rails`; for a containerised GitLab `docker exec -i <container>
+gitlab-rails`). `60-mirror-ticker.sh setup` writes `CORE_MIRROR_TOKEN` and `INTEGRATION_MIRROR_TOKEN` back
+into `.env` when it creates the project access tokens; the file is gitignored.
 
 Defaults to check before use:
 
-- `60-mirror-ticker.sh` runs `docker compose` in the directory above `scripts/`, so it expects your
-  `mirror-tick` service in `infra/docker-compose.yml` and the token file at `infra/.mirror-tokens`. The
-  container name `dhp-gl-mirror-tick` is fixed in it. `MIRROR_TICK_IMAGE`, `MIRROR_TICK_INTERVAL` (15 s)
-  and the printed-only `MIRROR_RATE_LIMIT` (the real limit is the rails setting in step 3) are overridable.
-- `38-harden-projects.sh` reaches `gitlab-rails` with `docker exec dhp-gl-gitlab` for the webhook token
-  only: set `GITLAB_CONTAINER`, or on omnibus make that call `sudo gitlab-rails`.
 - `manual-sync.sh` builds its push URL as `http://root:$GITLAB_ROOT_TOKEN@$GITLAB_HOST:$GITLAB_HTTP_PORT/...`;
   on a real instance that has to be `https` and the user may not be `root` - edit the `push_url` line.
-- `ci/run.sh` has no usable default `DATA_DIR`, so pass it, as step 6 does, along with `WEB_ROOT_HOST` and
-  `IMAGE`.
 - `ci/lib/common.sh` and `ci/setup-webroot.sh` default `SITE_URL` to `https://dhp.uz`, and
-  `verify-site.sh` looks for `https://dhp.uz` links in published pages - change them if the site moves. The
-  `http://localhost:8088` in `verify-site.sh`'s usage comment is an example `VERIFY_BASE`, not a setting.
+  `verify-site.sh` looks for `https://dhp.uz` links in published pages - change them if the site moves.
+- `ci/gitlab-ci.yml` defaults `DHP_DATA` to `/srv/dhp`; a project CI/CD variable overrides it.
 
-Before debugging a job that stopped: `jq` is required and `$WEB_ROOT` must be a real mount, so a job that
-would otherwise write the site into its own container filesystem stops instead
-(`WEB_ROOT_MOUNT_OPTIONAL=1` overrides); publications serialise on `$WEB_ROOT/.publish.lock` with `flock`
-for up to `WEB_LOCK_WAIT`; and both jobs check free space first, about 20 GB for temp and for the web root.
-A half-published release is recoverable with `ci/release-rollback.sh <version> --yes`, which removes that
-version folder and its entries from `package-list.json`, both site feeds and `package-registry.json`,
-re-pointing `current` at the newest version left; then retry with `ALLOW_REPUBLISH=1`.
+Before debugging a job that stopped: `jq` is required; `$DHP_DATA/webroot` must exist, be writable by the
+runner user and hold `publish-setup.json`, so a job cannot write the site somewhere nobody serves;
+publications serialise on `$WEB_ROOT/.publish.lock` with `flock` for up to `WEB_LOCK_WAIT`; and both jobs
+check free space first, about 20 GB for temp and for the web root. A half-published release is recoverable
+with `ci/release-rollback.sh <version> --yes`, which removes that version folder and its entries from
+`package-list.json`, both site feeds and `package-registry.json`, re-pointing `current` at the newest
+version left; then retry with `ALLOW_REPUBLISH=1`.
 
-Other environment variables the scripts read, with defaults: `CI_BUILD_REPO_URL` (`CI_PROJECT_URL`),
+Other environment variables the scripts read, with defaults: `DHP_DATA` (`/srv/dhp`) and the paths derived
+from it - `WEB_ROOT` (`$DHP_DATA/webroot`), `PUBLICATION_DIR` (`$DHP_DATA/publication`), `PUBLISHER_CACHE`
+(`$DHP_DATA/publisher-cache`), `ZIPS_DIR` (`$DHP_DATA/zips`), `TXCACHE_SEED` (set per package id by the
+pipeline, unset by hand means no seeding); `JAVA_HEAP` (`-Xmx12g`); `CI_BUILD_REPO_URL` (`CI_PROJECT_URL`),
 `DHP_CI_REF` (`ci`), `PUB_MODE` (`milestone`), `FAIL_ON_QA_ERRORS` (`0`; `0`, `false`, `no` and `off` mean
 off and anything else means on, so a typo leaves the gate on), `GATE_WARM_TXCACHE` (`0`), `ALLOW_REPUBLISH`
 (`0`), `ROLLBACK_ASSUME_YES` (`0`), `KEEP_ZIP` (`0`), `NEED_TEMP_GB` and `NEED_WEB_GB` (`20`),
-`WEB_ROOT_MOUNT_OPTIONAL` (`0`), `WEB_LOCK_WAIT` (`21600`), `PUBLISHER_VERSION` (unset, latest),
-`PUBLISHER_REFRESH` (`0`), `STAGING_DIR` (`$WEB_ROOT/.staging`), `HIST_ASSETS_DIR`
-(`$WEB_ROOT/fhir/assets-hist`).
+`WEB_LOCK_WAIT` (`21600`), `PUBLISHER_VERSION` (unset, latest), `PUBLISHER_REFRESH` (`0`), `STAGING_DIR`
+(`$WEB_ROOT/.staging`), `HIST_ASSETS_DIR` (`$WEB_ROOT/fhir/assets-hist`).
 
-## 14. State that lives only in GitLab
+## 13. State that lives only in GitLab and on the runner host
 
 A fresh deployment, a restored backup or a rebuilt runner inherits none of this: the hardening settings on
-both projects; `allowed_images`, `disable_entrypoint_overwrite`, `user` and
-`FF_DISABLE_UMASK_FOR_DOCKER_EXECUTOR=true` in the live `config.toml`, with the restart, cache-volume
-removal and chown of step 5; `CI_BUILD_REPO_URL`, `DHP_CI_REF` and the resource-group mode of steps 8 and
-10; and the webhook secret of step 3. Two things need attention over time: outgoing mail enabled or
+both projects; the runner registration and its `config.toml` (`concurrent = 1`, the `dhp` tag, any `PATH`
+line); the toolchain on the runner host; `CI_BUILD_REPO_URL`, `DHP_CI_REF` and the resource-group mode of
+steps 7 and 8; the webhook secret and the cron line of step 3; and `$DHP_DATA` itself, which is the
+published site - back it up like one. Two things need attention over time: outgoing mail enabled or
 `60-mirror-ticker.sh health` on a schedule, because a hard-failed mirror is otherwise completely silent,
 and the two mirror tokens rotated before they expire, staying `api`-scoped at Maintainer.
 
@@ -518,11 +453,11 @@ infra/scripts/38-harden-projects.sh          # apply
 Per project it sets:
 
 - `ci_config_path = .gitlab-ci.yml@<this project>:ci`. Without it GitLab reads `.gitlab-ci.yml` from the
-  pushed ref, so any mirrored branch can define its own jobs and run them with the web root mounted
-  read-write. It also lets old tags that carry no CI config build at all (step 10).
+  pushed ref, so any mirrored branch can define its own jobs and run them as the runner user, which owns
+  the web root. It also lets old tags that carry no CI config build at all (step 9).
 - `public_jobs = false`: job logs and QA artifacts stop being readable by every signed-in user.
 - `ci_pipeline_variables_minimum_override_role = owner`: a Developer can no longer pass
-  `FAIL_ON_QA_ERRORS`, `SKIP_DEPLOY`, `WEB_ROOT` or `PUB_MODE` on the Run pipeline form. Defaults still
+  `FAIL_ON_QA_ERRORS`, `SKIP_DEPLOY`, `DHP_DATA` or `PUB_MODE` on the Run pipeline form. Defaults still
   come from `.gitlab-ci.yml` on the `ci` branch and from CI/CD settings.
 - A protected tag rule `*` at create = Maintainer (40), since pushing an `X.Y.Z` tag is all it takes to
   publish. Maintainer and not "No one" (0): the mirror creates tags as the mirror user, level 0 is refused
@@ -531,8 +466,8 @@ Per project it sets:
 - `external_webhook_token`, only when `GITHUB_WEBHOOK_SECRET_<project id>` is in `.env` (step 3).
 
 All of it goes in over REST except the webhook token, which has no REST setter: that call is
-`docker exec $GITLAB_CONTAINER gitlab-rails` (default `dhp-gl-gitlab`; set `GITLAB_CONTAINER` in `.env` if
-your container has another name), or `sudo gitlab-rails` on an omnibus install.
+`$GITLAB_RAILS runner`, default `sudo gitlab-rails`, with the secret passed on stdin so it never appears
+in a process listing.
 
 Check: `show` prints both projects side by side. Then force a pull, run
 `infra/scripts/60-mirror-ticker.sh health`, and compare tag counts against GitHub - a protected-ref rule
@@ -543,4 +478,8 @@ the mirror cannot satisfy deletes tags, so this is the one check not to skip.
 - A real webhook delivery from GitHub: the HMAC route was only exercised with hand-signed payloads.
 - A genuinely new upstream commit or tag arriving through the mirror: refs were deleted in GitLab and
   restored by a pull instead, which is the same code path.
-- Your web server configuration: the site was only served with an `nginx:alpine` container.
+- A packaged `gitlab-runner` service running as the `gitlab-runner` user: the runner here was the static
+  binary run by hand as an ordinary user, with `DHP_DATA` pointing at that user's directory. The PATH note
+  in step 4 comes from that difference and is not proven on a service install.
+- Your web server configuration: the site was only served by a stock nginx with the web root as its
+  document root.

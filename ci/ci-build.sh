@@ -3,20 +3,15 @@
 #
 # Builds the checked-out commit and deploys output/ to
 #   $WEB_ROOT/<canonical path>/ci-build/
-# e.g. /web/fhir/core/ci-build -> https://dhp.uz/fhir/core/ci-build/
+# e.g. $DHP_DATA/webroot/fhir/core/ci-build -> https://dhp.uz/fhir/core/ci-build/
 #
 # The swap is staged next to the target and moved into place, so a reader never
 # sees a half-copied tree and no file from the previous build survives.
 #
-# docker run:
-#   docker run --rm --user "$(id -u):$(id -g)" \
-#     -v <repo>:/src -v <webroot>:/web \
-#     -v <pkgcache>:/fhir-cache -v <publisher-cache>:/publisher-cache \
-#     -v <txcache-seed>:/txcache-seed \
-#     -e TXCACHE_SEED=/txcache-seed \
-#     dhp-ig-publisher:local /ci/ci-build.sh
+# By hand, from a checkout of the guide:
+#   DHP_DATA=/srv/dhp ci/ci-build.sh
 #
-# GitLab CI: same image, script: ci/ci-build.sh, with IG_SRC=$CI_PROJECT_DIR.
+# GitLab CI runs it the same way, with IG_SRC=$CI_PROJECT_DIR.
 
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -32,7 +27,7 @@ load_ig_config
 # build rather than before the copy: the build is what takes the time, and two
 # builds racing here would also contend on the FHIR package cache.
 if [ "$SKIP_DEPLOY" != "1" ]; then
-  require_web_root_mount
+  require_web_root
   lock_web_root
 fi
 
@@ -89,8 +84,14 @@ seed_txcache
 # uz in the publisher's own phrase files, which a post-build rewrite could not
 # match. -target is where the build will be served from and -repo is what the
 # box cites as its source.
+#
+# -auto-ig-build also switches the publisher to the machine-wide package cache
+# (/var/lib/.fhir on Linux), which the runner user cannot create, and it dies
+# with an NPE out of FilesystemPackageCacheManager. -package-cache-folder points
+# it back at the user cache every other build on this host uses.
 BUILD_LOG="${BUILD_LOG:-$IG_SRC/ci-build.log}"
-run_genonce "$BUILD_LOG" -auto-ig-build -target "$CI_BUILD_URL" -repo "$REPO_SOURCE"
+run_genonce "$BUILD_LOG" -auto-ig-build -target "$CI_BUILD_URL" -repo "$REPO_SOURCE" \
+  -package-cache-folder "$HOME/.fhir"
 
 [ -d "$IG_SRC/output" ] || die "no output/ directory after build"
 [ -f "$IG_SRC/output/index.html" ] || die "output/index.html missing after build"

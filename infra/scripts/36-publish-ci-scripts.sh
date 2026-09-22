@@ -6,10 +6,10 @@
 #
 # What lands on the branch:
 #   /.gitlab-ci.yml   <- ci/gitlab-ci.yml   (the pipeline the repos include)
-#   /ci/...           <- ci/*.sh, ci/lib/*, ci/Dockerfile, ci/entrypoint.sh
+#   /ci/...           <- ci/*.sh, ci/lib/*
 #
 # The jobs fetch this branch and unpack /ci/ at run time, so updating a script
-# is a commit here - no image rebuild, nothing to install on the runner.
+# is a commit here - nothing to install on the runner.
 #
 # Idempotent: existing files are updated, new ones created, and a run that
 # changes nothing is reported as such instead of failing.
@@ -23,22 +23,14 @@ require_token
 CI_SRC="$BASE_DIR/ci"
 BRANCH="${DHP_CI_BRANCH:-ci}"
 
-# Everything a job needs, plus the files that document how the image is built.
 # `.gitlab-ci.yml` on the branch comes from ci/gitlab-ci.yml (see below).
-# ci/.gitlab-ci.yml, the in-repository variant, is deliberately NOT published:
-# it is the file the MOH commits into their own repository once they own it,
-# and putting it on the `ci` branch as well would give each project two
-# pipeline definitions.
 FILES=(
   "ci-build.sh"
   "release.sh"
   "release-rollback.sh"
   "setup-webroot.sh"
   "verify-site.sh"
-  "run.sh"
   "lib/common.sh"
-  "Dockerfile"
-  "entrypoint.sh"
 )
 
 publish_one() {

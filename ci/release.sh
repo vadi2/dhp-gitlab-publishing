@@ -19,16 +19,11 @@
 #      published page, the redirects, the RSS feeds, package-registry.json and
 #      the local ig-registry clone, then copies the result into the web root
 #
-# docker run:
-#   docker run --rm --user "$(id -u):$(id -g)" \
-#     -v <repo>:/src -v <webroot>:/web -v <publication>:/publication \
-#     -v <pkgcache>:/fhir-cache -v <publisher-cache>:/publisher-cache \
-#     -v <txcache-seed>:/txcache-seed -v <zips>:/zips \
-#     -e TXCACHE_SEED=/txcache-seed \
-#     dhp-ig-publisher:local /ci/release.sh 0.9.1
+# By hand, from a checkout of the tag:
+#   DHP_DATA=/srv/dhp ci/release.sh 0.9.1
 #
-# GitLab CI: same image, script: ci/release.sh, with IG_SRC=$CI_PROJECT_DIR and
-# the version taken from $CI_COMMIT_TAG.
+# GitLab CI runs it the same way, with IG_SRC=$CI_PROJECT_DIR and the version
+# taken from $CI_COMMIT_TAG.
 
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -39,10 +34,9 @@ VERSION="${1:-${CI_COMMIT_TAG:-}}"
 [ -n "$VERSION" ] || die "usage: release.sh <version>   (or set CI_COMMIT_TAG)"
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "version '$VERSION' is not MAJOR.MINOR.PATCH"
 
-ZIPS_DIR="${ZIPS_DIR:-/zips}"
 
 load_ig_config
-require_web_root_mount
+require_web_root
 lock_web_root
 
 # ------------------------------------------------------------------- checks
@@ -295,7 +289,7 @@ check_site_dependencies
 
 mkdir -p "$PUB_TEMP" "$ZIPS_DIR"
 
-# The publisher is run from $PUBLISHER_JAR in the mounted cache; the copy in the
+# The publisher is run from $PUBLISHER_JAR in $PUBLISHER_CACHE; the copy in the
 # source tree is only there for _genonce.sh, which has now finished with it.
 drop_publisher_from_source
 

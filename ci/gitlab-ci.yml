@@ -9,22 +9,18 @@
 # id, canonical URL, version, title - is read from the checked-out
 # sushi-config.yaml by ci/lib/common.sh.
 #
-# Runner requirements (infra/runner-config/config.toml):
-#   concurrent = 1
-#   pull_policy = ["if-not-present"], image dhp-ig-publisher:local present on
-#   the host docker daemon
-#   volumes:
-#     <data>/webroot            -> /web             rw
-#     <data>/fhir-package-cache -> /fhir-cache      rw
-#     <data>/txcache-seed       -> /txcache-seed-root rw
-#     <data>/publisher-cache    -> /publisher-cache rw
-#     <data>/publication        -> /publication     rw   (needs ~12 GB free)
-#     <data>/zips               -> /zips            rw
+# Runner: one shell-executor runner tagged `dhp` with `concurrent = 1`, on a
+# host with Java 21, Node + fsh-sushi, Ruby + jekyll, jq, rsync, unzip and zip,
+# whose runner user owns $DHP_DATA (see setup-webroot.sh).
 
 variables:
   # Shallow is enough: the scripts read the tag from CI_COMMIT_TAG and the
   # commit from CI_COMMIT_SHA, never from history.
   GIT_DEPTH: "1"
+  # Everything the pipeline keeps on the runner host: the web root, the
+  # publication workspace, the publisher jar, the terminology seed, the zips.
+  # Override as a project CI/CD variable if the host uses another path.
+  DHP_DATA: "/srv/dhp"
   # Ref holding this file and the ci/ scripts. A branch name means every job
   # picks up whatever is on the tip of `ci` at the moment it starts, so a push
   # to `ci` can change how a release already in the queue behaves. For
@@ -36,7 +32,6 @@ variables:
   DHP_CI_DIR: "/tmp/dhp-ci"
 
 default:
-  image: dhp-ig-publisher:local
   tags:
     - dhp
   # A publish must never be cancelled halfway through writing the web root.
@@ -48,7 +43,6 @@ default:
       # out. Fetch that one branch and unpack ci/ somewhere outside the work
       # tree, so the tree stays exactly as the tag or branch has it - which
       # matters, because -go-publish copies the whole source folder.
-      git config --global --add safe.directory '*'
       # DHP_CI_REF may name a branch or a tag. Probe with ls-remote rather than
       # trying one fetch and falling back to the other: a fallback has to
       # silence the first fetch's stderr to stay readable, and that hides the
@@ -75,10 +69,10 @@ default:
       # `tr -d '\r'` for the same reason ci/lib/common.sh strips it: a
       # sushi-config.yaml saved with CRLF would otherwise put a carriage return
       # in the middle of a path and mkdir would create a directory nothing finds.
-      export TXCACHE_SEED="/txcache-seed-root/$(sed -n '0,/^id:/s/^id:[[:space:]]*//p' sushi-config.yaml | tr -d '\r')"
+      export TXCACHE_SEED="$DHP_DATA/txcache-seed/$(sed -n '0,/^id:/s/^id:[[:space:]]*//p' sushi-config.yaml | tr -d '\r')"
       mkdir -p "$TXCACHE_SEED"
       export IG_SRC="$CI_PROJECT_DIR"
-      echo "IG_SRC=$IG_SRC  TXCACHE_SEED=$TXCACHE_SEED"
+      echo "IG_SRC=$IG_SRC  DHP_DATA=$DHP_DATA  TXCACHE_SEED=$TXCACHE_SEED"
 
 # Only the default branch and bare semver tags produce a pipeline. Pushing to
 # the `ci` branch itself must not create a job-less pipeline.

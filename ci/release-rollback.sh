@@ -26,12 +26,11 @@
 # interrupted run left it, because only a publication run can regenerate it.
 # After a rollback, re-run the release: -go-publish rewrites all of that.
 #
-# docker run:
-#   docker run --rm --user "$(id -u):$(id -g)" \
-#     -v <repo>:/src -v <webroot>:/web \
-#     dhp-ig-publisher:local /ci/release-rollback.sh 0.9.1
+# By hand, from a checkout of the guide:
+#   DHP_DATA=/srv/dhp ci/release-rollback.sh 0.9.1
 #
-# Env: WEB_ROOT, IG_SRC, plus KEEP_ZIP=1 to keep $ZIPS_DIR/<id>#<version>.zip.
+# Env: DHP_DATA (or WEB_ROOT), IG_SRC, plus KEEP_ZIP=1 to keep
+# $ZIPS_DIR/<id>#<version>.zip.
 
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -44,7 +43,7 @@ ASSUME_YES="${2:-}"
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "version '$VERSION' is not MAJOR.MINOR.PATCH"
 
 load_ig_config
-require_web_root_mount
+require_web_root
 # Same mutex as release.sh and ci-build.sh: this rewrites the shared feeds and
 # package-registry.json, which a concurrent release also rewrites.
 lock_web_root
@@ -77,7 +76,7 @@ header of this script.
 EOF
 
 if [ "$ASSUME_YES" != "--yes" ] && [ "${ROLLBACK_ASSUME_YES:-0}" != "1" ]; then
-  # A tty may not be there (CI, docker run without -t); refuse rather than
+  # A tty may not be there (CI); refuse rather than
   # guess, since the whole point of the prompt is that this is destructive.
   [ -t 0 ] || die "not running interactively - re-run with --yes (or ROLLBACK_ASSUME_YES=1) if this is really what you want"
   printf 'Type the version to confirm: ' >&2
@@ -88,7 +87,6 @@ fi
 rollback_version "$VERSION"
 
 if [ "${KEEP_ZIP:-0}" != "1" ]; then
-  ZIPS_DIR="${ZIPS_DIR:-/zips}"
   zip="$ZIPS_DIR/$IG_ID#$VERSION.zip"
   if [ -f "$zip" ]; then
     log "removing $zip"

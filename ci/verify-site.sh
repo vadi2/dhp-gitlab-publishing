@@ -1,45 +1,20 @@
 #!/usr/bin/env bash
-# Smoke-test a published web root by serving it with nginx in a throwaway
-# container and curling the URLs that must work after a release.
+# Curl the URLs that must work on the published site after a release.
 #
-#   verify-site.sh <webroot> <ig-code> <older-version> <newer-version> [port]
+#   verify-site.sh <base-url> <ig-code> <older-version> <newer-version>
+#   verify-site.sh https://dhp.uz core 0.9.1 0.9.2
 #
 # Prints one line per URL: <status> <url> [note]. Exits non-zero if any
 # required URL is not 200.
 
 set -uo pipefail
 
-# Two modes. Given a directory, serve it with a throwaway nginx and check that.
-# Given VERIFY_BASE, check a server that is already running - which is what the
-# GitLab phase uses, so the checks run against the same nginx the site is
-# actually served by, not a stand-in.
-#
-#   verify-site.sh ../data/webroot-scratch integrations 0.8.0 0.9.0
-#   VERIFY_BASE=http://localhost:8088 verify-site.sh - core 0.9.1 0.9.2
-
+BASE="${1:?usage: verify-site.sh <base-url> <ig-code> <older> <newer>}"
 IG="${2:?ig code, e.g. core or integrations}"
 OLD="${3:?older version}"
 NEW="${4:?newer version}"
-PORT="${5:-8899}"
-NAME="dhp-pub-verify-$PORT"
-
-if [ -n "${VERIFY_BASE:-}" ]; then
-  BASE="$VERIFY_BASE"
-  echo "checking $BASE (already running)"
-else
-  WEB="$(cd "${1:?usage: verify-site.sh <webroot> <ig-code> <older> <newer> [port]}" && pwd)"
-  docker rm -f "$NAME" >/dev/null 2>&1 || true
-  docker run -d --rm --name "$NAME" -p "127.0.0.1:$PORT:80" \
-    -v "$WEB:/usr/share/nginx/html:ro" nginx:alpine >/dev/null
-  trap 'docker rm -f "$NAME" >/dev/null 2>&1 || true' EXIT
-
-  for _ in $(seq 1 30); do
-    curl -s -o /dev/null "http://127.0.0.1:$PORT/" && break
-    sleep 1
-  done
-  BASE="http://127.0.0.1:$PORT"
-  echo "serving $WEB at $BASE"
-fi
+BASE="${BASE%/}"
+echo "checking $BASE"
 
 fail=0
 
@@ -91,9 +66,9 @@ check "/publication-feed.xml"
 check "/package-registry.json"
 check "/publish-setup.json"
 
-# Informational only. The demo nginx has autoindex on, so a bare directory
-# answers 200 with a file listing even when no index.html exists there. The
-# index.html checks below are the ones that prove the page is really present.
+# Informational only: a server with autoindex on answers a bare directory with
+# a listing even when no index.html exists there. The index.html checks below
+# are the ones that prove the page is really present.
 echo "== directory requests (informational: autoindex may answer these) =="
 for p in "/fhir/$IG/" "/fhir/$IG/$OLD/" "/fhir/$IG/$NEW/" "/fhir/$IG/ci-build/" "/fhir/$IG/en/"; do
   check "$p"

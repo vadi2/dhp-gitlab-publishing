@@ -5,8 +5,8 @@
 # sushi-config.yaml, so the same scripts serve uz.dhp.core and
 # uz.dhp.integrations (and any later DHP IG) unchanged.
 #
-# Paths are container paths by default; every one can be overridden by env var
-# so the scripts also run natively.
+# Everything the pipeline keeps between jobs lives under DHP_DATA on the runner
+# host (default /srv/dhp); every path can be overridden individually.
 
 # -E so the ERR trap below also fires inside functions and subshells.
 set -Eeuo pipefail
@@ -18,14 +18,14 @@ trap 'rc=$?; [ $rc -eq 0 ] || printf "[%s] FAILED rc=%s at %s:%s: %s\n" \
 
 # ---------------------------------------------------------------- environment
 
-IG_SRC="${IG_SRC:-/src}"                       # checked-out IG repo
-WEB_ROOT="${WEB_ROOT:-/web}"                   # publication web root (W)
-PUBLISHER_CACHE="${PUBLISHER_CACHE:-/publisher-cache}"
+DHP_DATA="${DHP_DATA:-/srv/dhp}"
+IG_SRC="${IG_SRC:-${CI_PROJECT_DIR:-$PWD}}"    # checked-out IG repo
+WEB_ROOT="${WEB_ROOT:-$DHP_DATA/webroot}"      # what the web server serves
+PUBLISHER_CACHE="${PUBLISHER_CACHE:-$DHP_DATA/publisher-cache}"
 PUBLISHER_JAR="${PUBLISHER_JAR:-$PUBLISHER_CACHE/publisher.jar}"
 TXCACHE_SEED="${TXCACHE_SEED:-}"               # optional seed for input-cache/txcache
-FHIR_PACKAGE_CACHE="${FHIR_PACKAGE_CACHE:-/fhir-cache}"
+ZIPS_DIR="${ZIPS_DIR:-$DHP_DATA/zips}"         # -go-publish's release zips
 SITE_URL="${SITE_URL:-https://dhp.uz}"         # what WEB_ROOT is served as
-BUILD_TEMP="${BUILD_TEMP:-/tmp/dhp-build}"
 JAVA_HEAP="${JAVA_HEAP:--Xmx12g}"
 
 # Local copy of the two scripts the HL7 history template hard-codes to
@@ -33,10 +33,14 @@ JAVA_HEAP="${JAVA_HEAP:--Xmx12g}"
 HIST_ASSETS_DIR="${HIST_ASSETS_DIR:-$WEB_ROOT/fhir/assets-hist}"
 
 # go-publish prerequisites (set up by setup-webroot.sh)
-IG_HISTORY="${IG_HISTORY:-/publication/ig-history}"
-IG_REGISTRY="${IG_REGISTRY:-/publication/ig-registry}"
-PUB_TEMPLATES="${PUB_TEMPLATES:-/publication/templates}"
-PUB_TEMP="${PUB_TEMP:-/publication/temp}"
+PUBLICATION_DIR="${PUBLICATION_DIR:-$DHP_DATA/publication}"
+IG_HISTORY="${IG_HISTORY:-$PUBLICATION_DIR/ig-history}"
+IG_REGISTRY="${IG_REGISTRY:-$PUBLICATION_DIR/ig-registry}"
+PUB_TEMPLATES="${PUB_TEMPLATES:-$PUBLICATION_DIR/templates}"
+PUB_TEMP="${PUB_TEMP:-$PUBLICATION_DIR/temp}"
+
+# The FHIR package cache is the runner user's ~/.fhir, which is where both the
+# publisher and SUSHI look by default. Nothing to configure.
 
 log()  { printf '[%s] %s\n' "$(date -u +%H:%M:%S)" "$*" >&2; }
 die()  { printf '[%s] ERROR: %s\n' "$(date -u +%H:%M:%S)" "$*" >&2; exit 1; }
@@ -44,44 +48,16 @@ warn() { printf '[%s] WARNING: %s\n' "$(date -u +%H:%M:%S)" "$*" >&2; }
 
 # jq is not optional: the QA gate, the package check and the idempotence checks
 # all read JSON with it, and every one of them used to degrade to "unknown"
-# (which the gate then treated as "clean") when jq was missing. The pipeline
-# invites the MOH to substitute their own image, so say so at the top rather
-# than silently publishing an unvalidated build.
+# (which the gate then treated as "clean") when jq was missing. Say so at the
+# top rather than silently publishing an unvalidated build.
 command -v jq >/dev/null 2>&1 || \
-  die "jq is not on PATH - the QA gate and the package checks need it; install jq in the build image"
-
-# ------------------------------------------------------------ package cache
-#
-# The publisher finds the FHIR package cache through user.home, and -go-publish
-# does not forward -package-cache-folder to the builds it starts itself, so the
-# only reliable lever is user.home. The image entrypoint sets this up for plain
-# `docker run`, but GitLab CI replaces the image entrypoint with its own shell,
-# so the same wiring has to happen here. Both are idempotent and it does not
-# matter which one runs first, or whether both do.
-wire_package_cache() {
-  export HOME="${HOME:-/tmp/dhp-home}"
-  mkdir -p "$HOME" "$FHIR_PACKAGE_CACHE/packages" 2>/dev/null || true
-
-  # Only create the link if nothing is there. A real ~/.fhir directory, or a
-  # volume the runner mounted at that path, is left exactly as it is.
-  [ -e "$HOME/.fhir" ] || ln -sfn "$FHIR_PACKAGE_CACHE" "$HOME/.fhir" 2>/dev/null || true
-
-  case " ${_JAVA_OPTIONS:-} " in
-    *" -Duser.home="*) ;;
-    *) export _JAVA_OPTIONS="-Duser.home=$HOME ${_JAVA_OPTIONS:-}" ;;
-  esac
-
-  # The IG checkout belongs to another uid in a CI job, and every script reads
-  # the commit out of it.
-  git config --global --add safe.directory '*' 2>/dev/null || true
-}
-wire_package_cache
+  die "jq is not on PATH - the QA gate and the package checks need it; install jq on the runner"
 
 # ------------------------------------------------------------- config parsing
 
 # Read a top-level scalar key out of sushi-config.yaml. Deliberately simple:
-# only top-level "key: value" lines, comments and quotes stripped. No yq in the
-# image and none of the values we need are nested or multi-line.
+# only top-level "key: value" lines, comments and quotes stripped. No yq on the
+# runner and none of the values we need are nested or multi-line.
 #
 # Order matters and used to be wrong (gotcha 18):
 #   - a UTF-8 BOM makes the very first key unmatchable, so `id` came back empty
@@ -146,7 +122,7 @@ load_ig_config() {
   esac
 
   IG_DEST="${IG_CANONICAL#$SITE_URL}"          # e.g. /fhir/core
-  IG_WEB_DIR="$WEB_ROOT$IG_DEST"               # e.g. /web/fhir/core
+  IG_WEB_DIR="$WEB_ROOT$IG_DEST"               # e.g. /srv/dhp/webroot/fhir/core
 
   log "IG            : $IG_ID"
   log "canonical     : $IG_CANONICAL"
@@ -215,7 +191,7 @@ prepare_publisher() {
 # prepare_publisher and seed_txcache put in input-cache/ ends up in the release
 # zip and in $PUB_TEMP: a 245 MB third-party binary and a terminology cache, for
 # every release, on the same filesystem as the web root. The publisher itself is
-# launched from $PUBLISHER_JAR in the mounted cache, never from the tree, and
+# launched from $PUBLISHER_JAR in $PUBLISHER_CACHE, never from the tree, and
 # the builds -go-publish starts are in-process, so the copy is only needed by
 # _genonce.sh. Drop it once the gated build is done. (gotcha 19)
 drop_publisher_from_source() {
@@ -256,10 +232,6 @@ cold_txcache() {
 
 # Copy the (grown) terminology cache back to the seed directory so the next
 # pipeline run starts warm. Best effort.
-# Test TXCACHE_SEED itself, not its parent: it is a mounted volume, and the
-# directory above a volume mount point (/ in the container) is not writable by
-# the unprivileged uid the container runs as. Checking the parent silently
-# turned this whole function into a no-op.
 save_txcache() {
   [ -n "$TXCACHE_SEED" ] || return 0
   [ -d "$IG_SRC/input-cache/txcache" ] || return 0
@@ -469,34 +441,16 @@ verify_package() {
 
 # ------------------------------------------------------------------- deploy
 
-# $WEB_ROOT has to be the bind mount of the real web root, not a directory the
-# container happens to have. If the runner is regenerated without the volume, or
-# a volume name is mistyped, `mkdir -p $WEB_ROOT` in the scripts below quietly
-# creates it inside the container's own filesystem: the build then "publishes"
-# into a layer that is discarded when the job ends, the job goes green, and the
-# site is untouched with nothing in the log to say so. Every write path here
-# depends on the mount being real, so prove it before doing any work.
-#
-# WEB_ROOT_MOUNT_OPTIONAL=1 for the case this cannot cover: a host run where the
-# web root is an ordinary directory on the same filesystem as everything else
-# (setup-webroot.sh on a laptop). It is never right in the job image.
-require_web_root_mount() {
+# $WEB_ROOT is created by setup-webroot.sh and never here: a job whose DHP_DATA
+# points somewhere empty must stop, not `mkdir -p` a fresh web root that nothing
+# serves and go green.
+require_web_root() {
   local wr="${WEB_ROOT%/}"
   [ -n "$wr" ] || die "WEB_ROOT is empty"
-  if [ "${WEB_ROOT_MOUNT_OPTIONAL:-0}" = "1" ]; then
-    log "web root      : $wr (mount check skipped, WEB_ROOT_MOUNT_OPTIONAL=1)"
-    return 0
-  fi
-  if command -v mountpoint >/dev/null 2>&1; then
-    mountpoint -q "$wr" && { log "web root      : $wr (bind mount)"; return 0; }
-  elif [ -r /proc/mounts ] && grep -qs " ${wr} " /proc/mounts; then
-    log "web root      : $wr (bind mount)"
-    return 0
-  elif [ ! -r /proc/mounts ] && ! command -v mountpoint >/dev/null 2>&1; then
-    warn "cannot tell whether $wr is a mount (no mountpoint(1) and no /proc/mounts) - skipping the check"
-    return 0
-  fi
-  die "$wr is not a mount point. The web root volume is not mounted into this container, so anything published would be written to the container's own filesystem and thrown away. Check the -v <webroot>:$wr in the docker run, or the runner's volumes = [...] in config.toml. To publish into a plain directory on purpose, set WEB_ROOT_MOUNT_OPTIONAL=1"
+  [ -d "$wr" ] || die "$wr does not exist - run setup-webroot.sh, or check DHP_DATA on the runner"
+  [ -w "$wr" ] || die "$wr is not writable by $(id -un) - the runner user has to own the web root"
+  [ -f "$wr/publish-setup.json" ] || die "$wr has no publish-setup.json - run setup-webroot.sh first"
+  log "web root      : $wr"
 }
 
 # Serialise everything that writes the web root. `resource_group: dhp-webroot`
@@ -513,7 +467,7 @@ require_web_root_mount() {
 lock_web_root() {
   local lockfile="$WEB_ROOT/.publish.lock" wait="${WEB_LOCK_WAIT:-21600}"
   if ! command -v flock >/dev/null 2>&1; then
-    warn "flock is not in this image - web-root writes are serialised only by the runner's concurrent = 1"
+    warn "flock is not installed - web-root writes are serialised only by the runner's concurrent = 1"
     return 0
   fi
   mkdir -p "$WEB_ROOT" 2>/dev/null || true

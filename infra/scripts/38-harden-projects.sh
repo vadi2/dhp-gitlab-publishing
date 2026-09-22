@@ -11,8 +11,8 @@
 #
 #   ci_config_path = .gitlab-ci.yml@<this project>:ci        F-01, F-21
 #       Without it GitLab reads .gitlab-ci.yml out of the pushed ref, so any
-#       mirrored branch can define its own jobs and run them as root on the
-#       runner with the web root mounted rw. With it the repo's own file is
+#       mirrored branch can define its own jobs and run them as the runner
+#       user, with write access to the web root. With it the repo's own file is
 #       ignored and only the `ci` branch defines the pipeline.
 #
 #   public_jobs = false                                      F-14
@@ -46,8 +46,8 @@
 #       GITHUB_WEBHOOK_SECRET_<project id> (you generate it, e.g.
 #       `openssl rand -hex 16`; when absent this step is skipped and the
 #       command to add it is printed) and never printed: not by this script,
-#       not into the process list (it reaches the container over a pipe, not
-#       as an argument), and not into the shell history.
+#       not into the process list (it reaches gitlab-rails on stdin, not as
+#       an argument), and not into the shell history.
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 require_token
@@ -206,7 +206,9 @@ print(json.dumps(out))' <<<"$cur")
 
 # ------------------------------------------------------ webhook secret ------
 
-GITLAB_CONTAINER="${GITLAB_CONTAINER:-dhp-gl-gitlab}"
+# How to reach gitlab-rails. On an omnibus install the default works as is; for
+# a containerised GitLab set GITLAB_RAILS="docker exec -i <container> gitlab-rails".
+GITLAB_RAILS="${GITLAB_RAILS:-sudo gitlab-rails}"
 
 # This script does not generate or store the secret. It takes
 # GITHUB_WEBHOOK_SECRET_<project id> from the environment (infra/.env is
@@ -214,21 +216,18 @@ GITLAB_CONTAINER="${GITLAB_CONTAINER:-dhp-gl-gitlab}"
 # deliberate act by whoever runs this, not a side effect of a hardening script,
 # and it keeps the value out of anything this file writes.
 #
-# The value reaches the container on stdin, not as an argument: `sh -c 'read'`
-# consumes the single line we pipe in and exports it, so the secret appears in
-# no argv and `ps` shows nothing, inside the container or out.
+# The value reaches gitlab-rails on stdin, not as an argument, so it appears in
+# no argv and `ps` shows nothing.
 rails_with_secret() {   # rails_with_secret <ruby source>; secret on stdin
-  docker exec -i "$GITLAB_CONTAINER" sh -c \
-    'read -r __tok; DHP_WEBHOOK_SECRET="$__tok" gitlab-rails runner "$1"' \
-    sh "$1"
+  $GITLAB_RAILS runner "$1"
 }
 
 webhook_token_state() {  # prints set / unset; never the value
   local id="$1"
-  docker exec "$GITLAB_CONTAINER" gitlab-rails runner \
+  $GITLAB_RAILS runner \
     "p = Project.find_by_id(${id}); \
      puts p.nil? ? 'no-such-project' : (p.external_webhook_token.present? ? 'set' : 'unset')" \
-    2>/dev/null | tr -d '\r' | tail -1
+    2>/dev/null </dev/null | tr -d '\r' | tail -1
 }
 
 apply_webhook_token() {
@@ -256,11 +255,11 @@ apply_webhook_token() {
 
   if printf '%s\n' "$secret" | rails_with_secret \
       "p = Project.find(${id}); \
-       p.update_column(:external_webhook_token, ENV.fetch('DHP_WEBHOOK_SECRET')); \
+       p.update_column(:external_webhook_token, STDIN.readline.strip); \
        puts 'ok'" | grep -q '^ok$'; then
     echo "   external_webhook_token: installed from ${key} (was ${state})"
   else
-    echo "   external_webhook_token: FAILED - is ${GITLAB_CONTAINER} running?" >&2
+    echo "   external_webhook_token: FAILED - can this user run '${GITLAB_RAILS}'?" >&2
     return 1
   fi
 }
