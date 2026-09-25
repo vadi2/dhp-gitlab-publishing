@@ -1,9 +1,11 @@
 # DHP implementation guide build and publish pipeline.
 #
-# This file lives on the GitLab-only `ci` branch of each mirror project,
-# together with the `ci/` scripts it runs. The `.gitlab-ci.yml` that ships in
-# the GitHub repo only does an `include:` of this file, so nothing in the
-# mirrored content has to change.
+# This file lives on the GitLab-only `ci` branch of each mirror project. The
+# `ci/` scripts it runs come either from that same branch or, with
+# DHP_CI_PROJECT set, from a separate GitLab project, and then the branch holds
+# nothing but this file. The `.gitlab-ci.yml` that ships in the GitHub repo
+# only does an `include:` of this file, so nothing in the mirrored content has
+# to change.
 #
 # The same file serves both guides unchanged. Everything IG-specific - package
 # id, canonical URL, version, title - is read from the checked-out
@@ -21,13 +23,20 @@ variables:
   # publication workspace, the publisher jar, the terminology seed, the zips.
   # Override as a project CI/CD variable if the host uses another path.
   DHP_DATA: "/srv/dhp"
-  # Ref holding this file and the ci/ scripts. A branch name means every job
-  # picks up whatever is on the tip of `ci` at the moment it starts, so a push
-  # to `ci` can change how a release already in the queue behaves. For
-  # production, set DHP_CI_REF to a tag of this branch (a project CI/CD
-  # variable overrides this default) and move the tag deliberately; the sha
+  # GitLab project holding the scripts, as a path (group/subgroup/project),
+  # with them under ci/ at its root - a copy of the dhp-gitlab-publishing
+  # repository will do. Jobs fetch it with CI_JOB_TOKEN, so that project has to
+  # list both IG projects in its job token allowlist, and the user a pipeline
+  # runs as (the mirror user, for mirrored refs) needs read access to it.
+  # Empty: the scripts are on the `ci` branch of this project, next to this file.
+  DHP_CI_PROJECT: ""
+  # Branch or tag of the scripts. Empty means `ci` in this project, or the
+  # default branch of DHP_CI_PROJECT. A branch means every job picks up
+  # whatever is on its tip at the moment it starts, so a push can change how a
+  # release already in the queue behaves. For production, set DHP_CI_REF to a
+  # tag (as a project CI/CD variable) and move it deliberately; the sha
   # actually used is echoed below and recorded as DHP_CI_SHA.
-  DHP_CI_REF: "ci"
+  DHP_CI_REF: ""
   # Where the scripts are unpacked inside the job.
   DHP_CI_DIR: "/tmp/dhp-ci"
 
@@ -39,29 +48,50 @@ default:
   before_script:
     - |
       set -eu
-      # The scripts are on the `ci` branch, which is not what this job checked
-      # out. Fetch that one branch and unpack ci/ somewhere outside the work
-      # tree, so the tree stays exactly as the tag or branch has it - which
-      # matters, because -go-publish copies the whole source folder.
+      # The scripts are not in what this job checked out. Fetch the one ref
+      # that holds them and unpack ci/ somewhere outside the work tree, so the
+      # tree stays exactly as the tag or branch has it - which matters, because
+      # -go-publish copies the whole source folder.
+      if [ -n "${DHP_CI_PROJECT:-}" ]; then
+        # GitLab masks CI_JOB_TOKEN in the job log, including inside this URL.
+        DHP_CI_REMOTE="${CI_SERVER_PROTOCOL}://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}:${CI_SERVER_PORT}/${DHP_CI_PROJECT}.git"
+        DHP_CI_FROM="$DHP_CI_PROJECT"
+        DHP_CI_REF="${DHP_CI_REF:-HEAD}"
+      else
+        DHP_CI_REMOTE=origin
+        DHP_CI_FROM="$CI_PROJECT_PATH"
+        DHP_CI_REF="${DHP_CI_REF:-ci}"
+      fi
       # DHP_CI_REF may name a branch or a tag. Probe with ls-remote rather than
       # trying one fetch and falling back to the other: a fallback has to
       # silence the first fetch's stderr to stay readable, and that hides the
-      # real reason a fetch failed behind "couldn't find remote ref".
-      DHP_CI_SRC="refs/heads/${DHP_CI_REF}"
-      git ls-remote --exit-code --heads origin "${DHP_CI_REF}" >/dev/null 2>&1 \
-        || DHP_CI_SRC="refs/tags/${DHP_CI_REF}"
-      git fetch --no-tags --depth=1 origin "+${DHP_CI_SRC}:refs/remotes/origin/dhp-ci"
+      # real reason a fetch failed behind "couldn't find remote ref". A probe
+      # that fails for another reason, such as a job token the scripts project
+      # does not allow, surfaces in the fetch below.
+      if [ "$DHP_CI_REF" = HEAD ]; then
+        DHP_CI_SRC=HEAD
+      elif git ls-remote --exit-code --heads "$DHP_CI_REMOTE" "$DHP_CI_REF" >/dev/null 2>&1; then
+        DHP_CI_SRC="refs/heads/${DHP_CI_REF}"
+      else
+        DHP_CI_SRC="refs/tags/${DHP_CI_REF}"
+      fi
+      git fetch --no-tags --depth=1 "$DHP_CI_REMOTE" "+${DHP_CI_SRC}:refs/remotes/dhp-ci/scripts" || {
+        echo "cannot fetch the scripts ($DHP_CI_REF) from $DHP_CI_FROM: check DHP_CI_REF names a branch or tag there," \
+             "and for a separate DHP_CI_PROJECT that its job token allowlist has $CI_PROJECT_PATH" \
+             "and $GITLAB_USER_LOGIN can read it"
+        exit 1
+      }
       rm -rf "$DHP_CI_DIR"
       mkdir -p "$DHP_CI_DIR"
-      git archive refs/remotes/origin/dhp-ci ci | tar -x -C "$DHP_CI_DIR"
+      git archive refs/remotes/dhp-ci/scripts ci | tar -x -C "$DHP_CI_DIR"
       chmod +x "$DHP_CI_DIR"/ci/*.sh
       # Which revision of the scripts this job ran, recorded in the build stamp
       # and the publication request so a published folder can be traced back to
       # the pipeline definition that produced it. before_script and script share
       # one shell, so the export reaches the scripts.
-      DHP_CI_SHA="$(git rev-parse --short refs/remotes/origin/dhp-ci)"
+      DHP_CI_SHA="$(git rev-parse --short refs/remotes/dhp-ci/scripts)"
       export DHP_CI_SHA
-      echo "scripts from $DHP_CI_SHA ($DHP_CI_REF)"
+      echo "scripts from $DHP_CI_FROM at $DHP_CI_SHA ($DHP_CI_REF)"
     - |
       # One terminology cache per package id, shared by every job for that IG.
       # No `| head -1` here: head closes the pipe, the upstream stage dies of

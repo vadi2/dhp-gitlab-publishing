@@ -248,7 +248,7 @@ copies the whole source folder into the release.
    ```
 
    In production point the jobs at an immutable ref: set `DHP_CI_REF` (a project CI/CD variable, default
-   `ci`) to a tag of the `ci` branch. Jobs probe branch then tag, and the commit used is recorded as
+   `ci`) to a tag of the `ci` branch, or of the scripts project below. Jobs probe branch then tag, and the commit used is recorded as
    `DHP_CI_SHA` in `ci-build-info.json` and `publication-request.json`.
 
    Branching off `main` leaves a frozen copy of the guide on `ci` that nothing reads. On a fresh project
@@ -269,12 +269,29 @@ copies the whole source folder into the release.
    version and title all come from the checked-out `sushi-config.yaml` - but it publishes to one project at
    a time.
 
+   Or keep the scripts in a GitLab project of their own and nothing but `/.gitlab-ci.yml` on the `ci`
+   branch:
+
+   - Push this repository, or just its `ci/` directory at the root, to a project such as
+     `templates/dhp-ci`.
+   - In that project, Settings > CI/CD > Job token permissions, add both IG projects to the allowlist
+     (or `POST /projects/<scripts id>/job_token_scope/allowlist` with `target_project_id=<ig id>`).
+     The user a pipeline runs as also needs read access to it; for mirrored refs that is the mirror user.
+   - On both IG projects, set the CI/CD variable `DHP_CI_PROJECT=templates/dhp-ci`. `DHP_CI_REF` then
+     names a branch or tag of that project, defaulting to its default branch.
+   - `DHP_CI_PROJECT=templates/dhp-ci infra/scripts/36-publish-ci-scripts.sh both` writes only
+     `.gitlab-ci.yml` and deletes the `ci/` scripts from the branch. It refuses while a project lacks the
+     variable, since the next job would find no scripts anywhere.
+
+   A project missing from the allowlist fails the job in its first second with "Authentication by CI/CD
+   job token not allowed from <project> to project #<id>".
+
 The rules: no pipeline at all on the `ci` branch itself, so pushing scripts creates no job-less failed
 pipelines; `ci-build` on the default branch, deploying to `/fhir/<ig>/ci-build/`, 3 h timeout; `release` on
 tags matching `^\d+\.\d+\.\d+$` (bare semver, no `v` prefix), which builds and then runs `-go-publish`,
 6 h timeout. Both jobs carry `resource_group: dhp-webroot` and `interruptible: false`, and keep
 `output/qa.html`, `qa.txt` and `qa.json` as artifacts for a week. Changing a script later is a commit on
-the `ci` branch - nothing to install on the runner.
+the `ci` branch, or in the scripts project - nothing to install on the runner.
 
 Check: pushing to `ci` creates no pipeline; a pipeline on `main` starts a `ci-build` job.
 
@@ -404,7 +421,7 @@ infra/scripts/enable-pull-mirror.sh  turn on pull mirroring for both projects
 infra/scripts/60-mirror-ticker.sh    setup|once|status|health - forced mirror pulls from cron
 infra/scripts/manual-sync.sh         CE/unlicensed fallback: fetch GitHub, push to GitLab
 infra/scripts/45-trigger-pipeline.sh trigger a pipeline on a ref, optionally with variables
-infra/scripts/36-publish-ci-scripts.sh push ci/ to the `ci` branch of both projects
+infra/scripts/36-publish-ci-scripts.sh push ci/ to the `ci` branch of both projects (step 7)
 ```
 
 The `ci/*` scripts run by hand exactly as the pipeline runs them, from a checkout of a guide:
@@ -455,7 +472,8 @@ Other environment variables the scripts read, with defaults: `DHP_DATA` (`/srv/d
 from it - `WEB_ROOT` (`$DHP_DATA/webroot`), `PUBLICATION_DIR` (`$DHP_DATA/publication`), `PUBLISHER_CACHE`
 (`$DHP_DATA/publisher-cache`), `ZIPS_DIR` (`$DHP_DATA/zips`), `TXCACHE_SEED` (set per package id by the
 pipeline, unset by hand means no seeding); `JAVA_HEAP` (`-Xmx12g`); `CI_BUILD_REPO_URL` (`CI_PROJECT_URL`),
-`DHP_CI_REF` (`ci`), `PUB_MODE` (`milestone`), `PUB_RELEASE_LABEL` (the publication status, `draft` for
+`DHP_CI_PROJECT` (empty: scripts on the `ci` branch), `DHP_CI_REF` (`ci`, or the default branch of
+`DHP_CI_PROJECT`), `PUB_MODE` (`milestone`), `PUB_RELEASE_LABEL` (the publication status, `draft` for
 0.x, used when `sushi-config.yaml` says `releaseLabel: ci-build`), `FAIL_ON_QA_ERRORS` (`0`; `0`, `false`, `no` and `off` mean
 off and anything else means on, so a typo leaves the gate on), `GATE_WARM_TXCACHE` (`0`), `ALLOW_REPUBLISH`
 (`0`), `ROLLBACK_ASSUME_YES` (`0`), `KEEP_ZIP` (`0`), `NEED_TEMP_GB` and `NEED_WEB_GB` (`20`),

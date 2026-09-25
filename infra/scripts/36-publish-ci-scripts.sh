@@ -11,6 +11,12 @@
 # The jobs fetch this branch and unpack /ci/ at run time, so updating a script
 # is a commit here - nothing to install on the runner.
 #
+# With DHP_CI_PROJECT set (environment or infra/.env), the scripts live in that
+# project instead: only /.gitlab-ci.yml is written, and any /ci/ files left on
+# the branch are deleted. It refuses unless each IG project already has a
+# DHP_CI_PROJECT CI/CD variable with the same value, since without it the next
+# job would look for the scripts on a branch that no longer has them.
+#
 # Idempotent: existing files are updated, new ones created, and a run that
 # changes nothing is reported as such instead of failing.
 
@@ -42,6 +48,18 @@ publish_one() {
   # repo, so a recursive tree listing runs to several pages and ci/ falls off
   # the end of the first one - which silently turns every update into a create
   # and the commit is rejected with "A file with this name already exists".
+  if [ -n "${DHP_CI_PROJECT:-}" ]; then
+    local have_var
+    have_var="$(api_soft GET "/projects/$project_id/variables/DHP_CI_PROJECT" \
+                | python3 -c 'import sys,json
+try: print(json.load(sys.stdin).get("value",""))
+except Exception: print("")')"
+    [ "$have_var" = "$DHP_CI_PROJECT" ] || {
+      echo "FAILED: project $project_id has no CI/CD variable DHP_CI_PROJECT=$DHP_CI_PROJECT - set it first, then re-run" >&2
+      return 1
+    }
+  fi
+
   local existing="" dest
   for rel in ".gitlab-ci.yml" "${FILES[@]/#/ci/}"; do
     dest="$rel"
@@ -56,10 +74,14 @@ project_id, branch, ci_src, existing = sys.argv[1], sys.argv[2], sys.argv[3], sy
 have = set(existing.split())
 
 files = [("gitlab-ci.yml", ".gitlab-ci.yml")]
-for rel in os.environ["DHP_FILES"].split():
-    files.append((rel, "ci/" + rel))
-
+scripts_elsewhere = bool(os.environ.get("DHP_CI_PROJECT"))
 actions = []
+for rel in os.environ["DHP_FILES"].split():
+    if not scripts_elsewhere:
+        files.append((rel, "ci/" + rel))
+    elif "ci/" + rel in have:
+        actions.append({"action": "delete", "file_path": "ci/" + rel})
+
 for src_rel, dest in files:
     src = os.path.join(ci_src, src_rel)
     with open(src, "rb") as fh:
@@ -95,6 +117,8 @@ PY
 }
 
 export DHP_FILES="${FILES[*]}"
+export DHP_CI_PROJECT="${DHP_CI_PROJECT:-}"
+[ -z "$DHP_CI_PROJECT" ] || echo "scripts come from project $DHP_CI_PROJECT: writing .gitlab-ci.yml only"
 
 case "${1:-both}" in
   core)        publish_one "$CORE_PROJECT_ID" core ;;
