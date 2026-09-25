@@ -163,8 +163,10 @@ PUB_CI_BUILD="${PUB_CI_BUILD:-$SITE_URL$IG_DEST/ci-build}"
 # it, so a failure inside that jq left a partial publication-request.json in the
 # checkout. Harmless in CI (GitLab cleans the work tree) but not outside it.
 GENERATED_PR=0
+SUSHI_BACKUP=""
 cleanup() {
   [ "$GENERATED_PR" = "1" ] && rm -f "$IG_SRC/publication-request.json"
+  [ -n "$SUSHI_BACKUP" ] && mv -f "$SUSHI_BACKUP" "$IG_SRC/sushi-config.yaml"
   return 0
 }
 trap cleanup EXIT
@@ -239,6 +241,28 @@ else
   cat "$IG_SRC/publication-request.json" >&2
 fi
 
+# ------------------------------------------------------------ release label
+#
+# Every page header reads "<version> - <releaseLabel>". Both guides keep
+# `releaseLabel: ci-build` in sushi-config.yaml, which is right for the
+# continuous build and wrong on a release: 0.8.0 and 0.9.2 went out with
+# "0.9.2 - ci-build" at the top of every page. HL7 editors change the label by
+# hand before tagging; here the tag is the release, so the label is set for
+# this build and sushi-config.yaml is put back on exit. The published source
+# copy keeps the release label, which is what was built. Any label other than
+# ci-build was chosen by the authors and is left alone.
+#
+# Defaults to the publication status (draft for 0.x, release from 1.0.0), the
+# same word the publish box shows; PUB_RELEASE_LABEL overrides it.
+if [ "$(sushi_get releaseLabel)" = "ci-build" ]; then
+  RELEASE_LABEL="${PUB_RELEASE_LABEL:-$(jq -r '.status // empty' "$IG_SRC/publication-request.json")}"
+  [ -n "$RELEASE_LABEL" ] || die "no release label: publication-request.json has no status and PUB_RELEASE_LABEL is unset"
+  SUSHI_BACKUP="$(mktemp)"
+  cp -p "$IG_SRC/sushi-config.yaml" "$SUSHI_BACKUP"
+  sed -i "s/^releaseLabel:.*/releaseLabel: $RELEASE_LABEL/" "$IG_SRC/sushi-config.yaml"
+  log "releaseLabel  : ci-build -> $RELEASE_LABEL for this release"
+fi
+
 # -------------------------------------------------------------------- build
 
 prepare_publisher
@@ -271,6 +295,9 @@ run_genonce "$BUILD_LOG"
 
 verify_package "$IG_ID" "$VERSION"
 [ -f "$IG_SRC/output/qa.json" ] || die "output/qa.json missing - -go-publish needs it"
+if grep -qs -- "$VERSION - ci-build" "$IG_SRC/output/index.html" "$IG_SRC/output/en/index.html"; then
+  die "the pre-build still says '$VERSION - ci-build' in the page header - set releaseLabel in sushi-config.yaml"
+fi
 
 read -r ERRS WARNS <<<"$(qa_counts)"
 # Called the pre-build, not "QA", because a release produces two sets of counts

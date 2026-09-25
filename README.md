@@ -220,6 +220,10 @@ Serve `/srv/dhp/webroot` at `https://dhp.uz/`, so `/fhir/core/...` maps to `webr
 - Canonical-URL resolution (`https://dhp.uz/fhir/core/StructureDefinition/X` returning the page or the
   JSON depending on `Accept`) is a web server job; the publisher cannot do it and the pipeline does not try.
 
+Serve the whole web root, not only the guide folders: `history.html` loads its version table from
+`/fhir/assets-hist/history.js` and links `/fhir/license.html`, and a server that maps only `/fhir/core/` and
+`/fhir/integrations/` leaves every history page empty. `verify-site.sh` checks both.
+
 The web server only reads; the runner user is the only writer. If they are different machines, the web
 root has to be a share the runner host mounts read-write - the pipeline swaps directories into place with
 `mv`, so it must be one filesystem.
@@ -340,7 +344,8 @@ ci/verify-site.sh https://dhp.uz integrations 0.8.0 0.9.0
 The last two arguments are the older and the newer of two published versions. It checks about 30 URLs per
 guide, exits non-zero if a required one is not 200, and checks the four publish-box statements (current
 published version, permanent home, superseded-by link, continuous build with an absolute source link),
-which are easy to get wrong and silent when they are. The only expected 301s are `/fhir/core` and
+that every script `history.html` loads answers 200, and that no release's page header says
+`<version> - ci-build` - all easy to get wrong and silent when they are. The only expected 301s are `/fhir/core` and
 `/fhir/integrations` without a trailing slash. The last section, "'Directory of published versions' links
 resolve", is informational: it follows the cross-guide links in the published pages and shows 404s for
 the other guide until that one is published too, without failing the run.
@@ -372,6 +377,12 @@ the other guide until that one is published too, without failing the run.
   is the usual cause.
 - The ci-build publish box says "Local Development build", or the job dies in the publish-box check: the
   build did not get `-auto-ig-build`, or `-repo` got something that is not an absolute URL.
+- `history.html` shows its heading and no table: `/fhir/assets-hist/history.js` answers 404, so the web
+  server is not serving the whole web root (step 6), or step 5 never vendored the file.
+- Every page of a release says `0.9.2 - ci-build` next to the version: the guides keep
+  `releaseLabel: ci-build` in `sushi-config.yaml`, and releases published before `release.sh` started
+  replacing it for release builds kept it. `DHP_DATA=/srv/dhp ci/relabel-releases.sh core` (and
+  `integrations`) fixes the published pages in place, in under a minute.
 - `GET /projects/<id>/mirror/pull` says `update_status: none` with null timestamps: not a failure, the
   mirror worker has not run yet.
 
@@ -383,6 +394,7 @@ ci/setup-webroot.sh                  one-off $DHP_DATA layout, web root + public
 ci/ci-build.sh                       build and deploy the continuous build
 ci/release.sh <version>              verify, build, -go-publish (QA gate opt-in, step 9)
 ci/release-rollback.sh <version>     undo one publication in the web root
+ci/relabel-releases.sh <ig>          fix a "- ci-build" page header on already-published releases
 ci/verify-site.sh                    curl the URLs that must work (step 10)
 ci/gitlab-ci.yml                     the pipeline, as /.gitlab-ci.yml on the `ci` branch
 infra/scripts/lib.sh                 shared env + API helpers for the scripts below
@@ -443,7 +455,8 @@ Other environment variables the scripts read, with defaults: `DHP_DATA` (`/srv/d
 from it - `WEB_ROOT` (`$DHP_DATA/webroot`), `PUBLICATION_DIR` (`$DHP_DATA/publication`), `PUBLISHER_CACHE`
 (`$DHP_DATA/publisher-cache`), `ZIPS_DIR` (`$DHP_DATA/zips`), `TXCACHE_SEED` (set per package id by the
 pipeline, unset by hand means no seeding); `JAVA_HEAP` (`-Xmx12g`); `CI_BUILD_REPO_URL` (`CI_PROJECT_URL`),
-`DHP_CI_REF` (`ci`), `PUB_MODE` (`milestone`), `FAIL_ON_QA_ERRORS` (`0`; `0`, `false`, `no` and `off` mean
+`DHP_CI_REF` (`ci`), `PUB_MODE` (`milestone`), `PUB_RELEASE_LABEL` (the publication status, `draft` for
+0.x, used when `sushi-config.yaml` says `releaseLabel: ci-build`), `FAIL_ON_QA_ERRORS` (`0`; `0`, `false`, `no` and `off` mean
 off and anything else means on, so a typo leaves the gate on), `GATE_WARM_TXCACHE` (`0`), `ALLOW_REPUBLISH`
 (`0`), `ROLLBACK_ASSUME_YES` (`0`), `KEEP_ZIP` (`0`), `NEED_TEMP_GB` and `NEED_WEB_GB` (`20`),
 `WEB_LOCK_WAIT` (`21600`), `PUBLISHER_VERSION` (unset, latest), `PUBLISHER_REFRESH` (`0`), `STAGING_DIR`

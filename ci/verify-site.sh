@@ -93,6 +93,38 @@ for v in "$OLD" "$NEW"; do
   fi
 done
 
+# history.html carries the version list as inline JSON, so the check above
+# passes even when the page renders empty: the table is drawn by history.js,
+# which release.sh points at /fhir/assets-hist/. Every on-site script and the
+# license link the page carries have to load.
+echo "== history.html scripts and license link load =="
+curl -s "$BASE/fhir/$IG/history.html" \
+  | grep -oE '(src="[^"]*\.js"|href="[^"]*license\.html")' | sed -E 's/^(src|href)="//; s/"$//' | sort -u \
+  | { bad=0
+      while read -r ref; do
+        case "$ref" in
+          http://*|https://*) echo "note  off-site: $ref"; continue ;;
+          /*) path="$ref" ;;
+          *)  path="$(realpath -m "/fhir/$IG/$ref")" ;;
+        esac
+        code=$(curl -s -o /dev/null -w '%{http_code}' "$BASE$path")
+        if [ "$code" = "200" ]; then echo "200  $path"; else echo "$code  $path   <-- expected 200"; bad=1; fi
+      done
+      exit $bad; } || fail=1
+
+# The page header reads "<version> - <releaseLabel>". A release built from a
+# sushi-config.yaml that still says ci-build is labelled a ci-build on every
+# page; release.sh now prevents it, relabel-releases.sh repairs older ones.
+echo "== page header release label =="
+for p in "/fhir/$IG/en/index.html" "/fhir/$IG/$OLD/en/index.html" "/fhir/$IG/$NEW/en/index.html"; do
+  label=$(curl -s "$BASE$p" | tr '\n' ' ' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+ - [A-Za-z0-9.+-]+' | sed -n 1p)
+  case "$label" in
+    *" - ci-build") echo "FAIL  $p header says '$label' - run ci/relabel-releases.sh $IG"; fail=1 ;;
+    "")            echo "warn  $p: no '<version> - <label>' in the header - check it by hand" ;;
+    *)             echo "ok    $p header says '$label'" ;;
+  esac
+done
+
 echo "== package-list.json =="
 curl -s "$BASE/fhir/$IG/package-list.json" \
   | jq -r '{"package-id", canonical, title, category,
