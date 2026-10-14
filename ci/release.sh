@@ -390,6 +390,27 @@ if [ "$PUB_MODE" = "milestone" ]; then
   [ -e "$IG_WEB_DIR/index.html" ] || die "milestone release but $IG_WEB_DIR/index.html is missing"
 fi
 
+# ------------------------------------------------------------------- prune
+#
+# -go-publish leaves full-ig.zip, expansions.json, expansions.xml and package.db
+# in the new version folder, and regenerates full-ig.zip in every earlier version
+# folder on each release, so pruning only the new folder is not enough. They run
+# to several hundred MB per version and no published page links to them. The
+# root copy of the current release and ci-build keep theirs; the .zip downloads
+# of the expansions stay everywhere. PRUNE_FILES="" turns this off.
+PRUNE_FILES="${PRUNE_FILES-full-ig.zip expansions.json expansions.xml package.db}"
+if [ -n "$PRUNE_FILES" ]; then
+  for dir in "$IG_WEB_DIR"/*/; do
+    [[ "$(basename "$dir")" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || continue
+    for f in $PRUNE_FILES; do
+      if [ -f "$dir$f" ]; then
+        rm -f "$dir$f"
+        log "pruned        : ${dir#"$WEB_ROOT"}$f"
+      fi
+    done
+  done
+fi
+
 # -go-publish rewrites history.html on every publication, so this runs on every
 # publication too.
 localise_history_scripts

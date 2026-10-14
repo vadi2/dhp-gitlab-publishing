@@ -35,8 +35,9 @@ the root serves the latest release.
 - One runner, shell executor, `concurrent = 1`, tag `dhp` (step 4). Its host needs Java 21, Node with
   `fsh-sushi` (`npm install -g fsh-sushi`), Ruby with `jekyll`, `git`, `curl`, `jq`, `rsync`, `unzip` and
   `zip` - what the guides' GitHub Actions install - and 16 GB of RAM: the publisher runs with a 12 GB heap.
-- Disk on the runner host: about 2.7 GB in the web root per core release, half that per integrations
-  release, plus 12 GB free for temp, which peaks around 11 GB and grows as versions accumulate, because
+- Disk on the runner host: about 2.1 GB in the web root per core release, half that per integrations
+  release (`release.sh` deletes `full-ig.zip`, `expansions.json`, `expansions.xml` and `package.db`, about
+  600 MB, from every version folder after each release; the root and `ci-build` keep theirs), plus 12 GB free for temp, which peaks around 11 GB and grows as versions accumulate, because
   publishing version N copies every earlier version through temp. Caches add a few GB.
 - Outbound network from the runner host:
 
@@ -319,7 +320,7 @@ Publish oldest first, one at a time, waiting for each: the publisher rewrites ev
 publish box from `package-list.json`. `release.sh` refuses a version that already has a folder or a
 `package-list.json` entry, and one older than the newest published unless you pass `PUB_MODE=working`,
 which publishes into the version folder without taking over the canonical URL. Core has tags back to
-0.1.0 and each core release costs 73-93 min and about 2.7 GB, so decide how far back to go first. An
+0.1.0 and each core release costs 73-93 min and about 2.1 GB, so decide how far back to go first. An
 integrations release is 48 min for the first version and 78 min once there is an earlier one to carry
 along.
 
@@ -476,7 +477,7 @@ pipeline, unset by hand means no seeding); `JAVA_HEAP` (`-Xmx12g`); `CI_BUILD_RE
 `DHP_CI_PROJECT`), `PUB_MODE` (`milestone`), `PUB_RELEASE_LABEL` (the publication status, `draft` for
 0.x, used when `sushi-config.yaml` says `releaseLabel: ci-build`), `FAIL_ON_QA_ERRORS` (`0`; `0`, `false`, `no` and `off` mean
 off and anything else means on, so a typo leaves the gate on), `GATE_WARM_TXCACHE` (`0`), `ALLOW_REPUBLISH`
-(`0`), `ROLLBACK_ASSUME_YES` (`0`), `KEEP_ZIP` (`0`), `NEED_TEMP_GB` and `NEED_WEB_GB` (`20`),
+(`0`), `PRUNE_FILES` (`full-ig.zip expansions.json expansions.xml package.db`; empty turns pruning off), `ROLLBACK_ASSUME_YES` (`0`), `KEEP_ZIP` (`0`), `NEED_TEMP_GB` and `NEED_WEB_GB` (`20`),
 `WEB_LOCK_WAIT` (`21600`), `PUBLISHER_VERSION` (unset, latest), `PUBLISHER_REFRESH` (`0`), `STAGING_DIR`
 (`$WEB_ROOT/.staging`), `HIST_ASSETS_DIR` (`$WEB_ROOT/fhir/assets-hist`).
 
