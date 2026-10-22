@@ -187,6 +187,18 @@ prepare_publisher() {
   fi
 }
 
+# ---------------------------------------------------------------------- sushi
+
+# The publisher runs SUSHI with --require-latest, so every build fails from the
+# day a new SUSHI is released until the runner has it (3.21.0 on 2026-10-20).
+# The pre-GitLab deploy ran `npm update -g fsh-sushi` before each build for the
+# same reason.
+prepare_sushi() {
+  npm install -g fsh-sushi@latest >&2 || die "npm install -g fsh-sushi@latest failed, see npm's error above"
+  SUSHI_BUILD="$(sushi --version 2>/dev/null | sed -n 's/^SUSHI v\([^ ]*\).*/\1/p' || true)"
+  log "SUSHI         : ${SUSHI_BUILD:-unknown}"
+}
+
 # -go-publish clones and zips the whole source folder, so everything
 # prepare_publisher and seed_txcache put in input-cache/ ends up in the release
 # zip and in $PUB_TEMP: a 245 MB third-party binary and a terminology cache, for

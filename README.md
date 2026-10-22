@@ -33,7 +33,8 @@ the root serves the latest release.
   Runner 19.4.0. An activation code is a cloud licence and needs the instance to reach
   `customers.gitlab.com`; an instance with no outbound internet needs a licence *file*.
 - One runner, shell executor, `concurrent = 1`, tag `dhp` (step 4). Its host needs Java 21, Node with
-  `fsh-sushi` (`npm install -g fsh-sushi`), Ruby with `jekyll`, `git`, `curl`, `jq`, `rsync`, `unzip` and
+  `fsh-sushi` (`npm install -g fsh-sushi`, as the runner user: both scripts run
+  `npm install -g fsh-sushi@latest` before every build), Ruby with `jekyll`, `git`, `curl`, `jq`, `rsync`, `unzip` and
   `zip` - what the guides' GitHub Actions install - and 16 GB of RAM: the publisher runs with a 12 GB heap.
 - Disk on the runner host: about 2.1 GB in the web root per core release, half that per integrations
   release (`release.sh` deletes `full-ig.zip`, `expansions.json`, `expansions.xml` and `package.db`, about
