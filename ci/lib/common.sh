@@ -301,7 +301,7 @@ prepare_sushi() {
     # sees a release that lands mid-run even when the pin itself is unchanged.
     if [ "$pin" = "latest" ] || [ "$pin" = "$latest" ]; then
       SUSHI_BUILD="$latest (fsh.ini: $pin)"
-    elif [[ "$pin" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    elif [[ "$pin" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-.+)?$ ]]; then
       die "fsh.ini pins sushi-version=$pin but the latest fsh-sushi is $latest - the publisher runs the pin with --require-latest, so the build would fail. Update or remove the pin"
     else
       # A range, a partial version or another dist-tag: npx resolves it, this
