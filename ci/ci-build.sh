@@ -76,6 +76,7 @@ case "$REPO_SOURCE" in
 esac
 
 prepare_publisher
+prepare_sushi
 seed_txcache
 
 # -auto-ig-build is what makes the publisher write a continuous-build publish
@@ -130,6 +131,7 @@ cat > "$CI_BUILD_DIR/ci-build-info.json" <<JSON
   "ref": "$REF",
   "built": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "publisher": "${PUBLISHER_BUILD:-unknown}",
+  "sushi": "${SUSHI_BUILD:-unknown}",
   "ci-scripts": "${DHP_CI_SHA:-unknown}",
   "source": "$REPO_SOURCE",
   "qa-errors": "$ERRS",

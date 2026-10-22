@@ -33,7 +33,8 @@ the root serves the latest release.
   Runner 19.4.0. An activation code is a cloud licence and needs the instance to reach
   `customers.gitlab.com`; an instance with no outbound internet needs a licence *file*.
 - One runner, shell executor, `concurrent = 1`, tag `dhp` (step 4). Its host needs Java 21, Node with
-  `fsh-sushi` (`npm install -g fsh-sushi`), Ruby with `jekyll`, `git`, `curl`, `jq`, `rsync`, `unzip` and
+  `fsh-sushi` (`npm install -g fsh-sushi`, installed so the runner user can update it: both scripts bring it
+  to the latest npm release before every build, because the publisher runs SUSHI with `--require-latest`), Ruby with `jekyll`, `git`, `curl`, `jq`, `rsync`, `unzip` and
   `zip` - what the guides' GitHub Actions install - and 16 GB of RAM: the publisher runs with a 12 GB heap.
 - Disk on the runner host: about 2.1 GB in the web root per core release, half that per integrations
   release (`release.sh` deletes `full-ig.zip`, `expansions.json`, `expansions.xml` and `package.db`, about
@@ -379,6 +380,9 @@ the other guide until that one is published too, without failing the run.
   `DHP_DATA` on the project does not match the host.
 - `sushi: command not found` or `jekyll: command not found` in the job log while both work in your own
   shell: the runner's non-login shell has another PATH. Set `environment = ["PATH=..."]` (step 4).
+- `npm install -g fsh-sushi@... failed` at the start of a build: the runner user cannot write to the npm
+  global prefix (SUSHI was installed as root). Reinstall it under the runner user, e.g. with
+  `npm config set prefix ~/.npm-global` and the PATH line from step 4.
 - Tags or commits stopped arriving and no job failed: the mirror is hard-failed, which is silent with
   outgoing mail off. `60-mirror-ticker.sh health` names it; after a protected-ref change check the tag
   counts too (hardening section).
@@ -478,7 +482,7 @@ pipeline, unset by hand means no seeding); `JAVA_HEAP` (`-Xmx12g`); `CI_BUILD_RE
 0.x, used when `sushi-config.yaml` says `releaseLabel: ci-build`), `FAIL_ON_QA_ERRORS` (`0`; `0`, `false`, `no` and `off` mean
 off and anything else means on, so a typo leaves the gate on), `GATE_WARM_TXCACHE` (`0`), `ALLOW_REPUBLISH`
 (`0`), `PRUNE_FILES` (`full-ig.zip expansions.json expansions.xml package.db`; empty turns pruning off), `ROLLBACK_ASSUME_YES` (`0`), `KEEP_ZIP` (`0`), `NEED_TEMP_GB` and `NEED_WEB_GB` (`20`),
-`WEB_LOCK_WAIT` (`21600`), `PUBLISHER_VERSION` (unset, latest), `PUBLISHER_REFRESH` (`0`), `STAGING_DIR`
+`WEB_LOCK_WAIT` (`21600`), `PUBLISHER_VERSION` (unset, latest), `PUBLISHER_REFRESH` (`0`), `SUSHI_UPDATE` (`1`; `0` skips the fsh-sushi update), `STAGING_DIR`
 (`$WEB_ROOT/.staging`), `HIST_ASSETS_DIR` (`$WEB_ROOT/fhir/assets-hist`).
 
 ## Optional: harden the two projects

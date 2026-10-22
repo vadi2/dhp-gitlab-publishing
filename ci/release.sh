@@ -266,6 +266,7 @@ fi
 # -------------------------------------------------------------------- build
 
 prepare_publisher
+prepare_sushi
 
 # A gate has to ask the terminology server the same question the build that
 # ships will ask. -go-publish rebuilds the guide with -resetTx, i.e. against an

@@ -187,6 +187,49 @@ prepare_publisher() {
   fi
 }
 
+# ---------------------------------------------------------------------- sushi
+
+# The version `sushi --version` reports, or "" if it is not installed.
+# Same reason for `sed -n 1p` instead of `head -1` as publisher_build_of.
+sushi_version_of() {
+  sushi --version 2>/dev/null \
+    | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | sed -n 1p || true
+}
+
+# Bring the global fsh-sushi up to the latest release on npm before a build.
+#
+# The publisher runs SUSHI with --require-latest, so the day a new SUSHI is
+# published every build on a runner that still has the old one fails at once
+# (3.21.0 on 2026-10-20 broke every ci-build until it was updated by hand). The
+# pre-GitLab deploy ran `npm update -g fsh-sushi` before each build for the same
+# reason. Only installs when the installed version differs from npm's latest.
+#
+# SUSHI_UPDATE=0 skips this, e.g. on a runner with no route to the npm registry.
+prepare_sushi() {
+  if [ "${SUSHI_UPDATE:-1}" = "0" ]; then
+    SUSHI_BUILD="$(sushi_version_of)"
+    log "SUSHI         : ${SUSHI_BUILD:-not installed} (SUSHI_UPDATE=0, not checked)"
+    return 0
+  fi
+  command -v npm >/dev/null 2>&1 || die "npm is not on PATH - it is needed to keep fsh-sushi current; install Node or set SUSHI_UPDATE=0"
+  local have latest
+  have="$(sushi_version_of)"
+  latest="$(npm view fsh-sushi version 2>/dev/null || true)"
+  if [ -z "$latest" ]; then
+    # --require-latest will fail the build anyway if this one is out of date,
+    # but an unreachable registry is not itself a reason to stop here.
+    warn "cannot read the latest fsh-sushi version from npm, keeping ${have:-none}"
+  elif [ "$have" != "$latest" ]; then
+    log "updating fsh-sushi ${have:-none} -> $latest"
+    npm install -g "fsh-sushi@$latest" >&2 || die \
+      "npm install -g fsh-sushi@$latest failed - the publisher runs SUSHI with --require-latest, so the build would fail anyway. Check that the runner user can write to $(npm prefix -g 2>/dev/null || echo 'the npm global prefix')"
+    have="$(sushi_version_of)"
+    [ "$have" = "$latest" ] || die "installed fsh-sushi@$latest but sushi on PATH reports ${have:-nothing} - check PATH for a second sushi"
+  fi
+  SUSHI_BUILD="$have"
+  log "SUSHI         : ${have:-not installed}"
+}
+
 # -go-publish clones and zips the whole source folder, so everything
 # prepare_publisher and seed_txcache put in input-cache/ ends up in the release
 # zip and in $PUB_TEMP: a 245 MB third-party binary and a terminology cache, for
