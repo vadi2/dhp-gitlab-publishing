@@ -189,61 +189,118 @@ prepare_publisher() {
 
 # ---------------------------------------------------------------------- sushi
 
-# The version `sushi --version` reports, or "" if it is not installed.
-# Same reason for `sed -n 1p` instead of `head -1` as publisher_build_of.
+# The version `sushi --version` reports, or "" if it is not installed or does
+# not start. No `| head -1` (gotcha 6).
 sushi_version_of() {
   sushi --version 2>/dev/null \
     | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | sed -n 1p || true
 }
 
-# Bring the global fsh-sushi up to the latest release on npm before a build.
+# Why sushi_version_of came back empty, for an error message: no sushi on
+# PATH, or the first lines it printed - a SUSHI that needs a newer Node than
+# the runner has dies on start, and its stderr is the only clue.
+sushi_probe_failure() {
+  local bin
+  bin="$(command -v sushi || true)"
+  if [ -z "$bin" ]; then
+    printf 'no sushi on PATH'
+  else
+    printf '%s does not start (node %s): %s' "$bin" \
+      "$(node --version 2>/dev/null || echo 'not on PATH')" \
+      "$(sushi --version 2>&1 | sed -n 1,5p | tr '\n' ' ' || true)"
+  fi
+}
+
+# The sushi-version pin from the [FSH] section of fsh.ini, or "". With a pin
+# the publisher runs `npx fsh-sushi@<pin>` instead of the global sushi
+# (FSHRunner.runFsh).
+sushi_pin() {
+  [ -f "$IG_SRC/fsh.ini" ] || return 0
+  sed 's/\r$//' "$IG_SRC/fsh.ini" | awk -F= '
+    /^[[:space:]]*\[/ { fsh = ($0 ~ /^[[:space:]]*\[FSH\][[:space:]]*$/); next }
+    fsh && $1 ~ /^[[:space:]]*sushi-version[[:space:]]*$/ {
+      v = $2; gsub(/^[[:space:]]+|[[:space:]]+$/, "", v); print v; exit }'
+}
+
+# Bring the global fsh-sushi up to the latest release before a build.
 #
 # The publisher runs SUSHI with --require-latest, so the day a new SUSHI is
 # published every build on a runner that still has the old one fails at once
 # (3.21.0 on 2026-10-20 broke every ci-build until it was updated by hand). The
 # pre-GitLab deploy ran `npm update -g fsh-sushi` before each build for the same
-# reason. Only installs when the installed version differs from npm's latest.
+# reason. Only installs when the installed version is not the latest.
 #
-# The comparison is the one --require-latest makes: SUSHI runs
-# `npm view fsh-sushi version` and fails unless it equals its own version,
-# including when the registry cannot be read. The sushi probed here is the one
-# the publisher runs: `sushi` on PATH, with npmPath from fhir-settings.json in
-# front when it is set (FSHRunner).
+# "Latest" is worked out the way --require-latest does it (SUSHI's
+# getLatestSushiVersion): `npm view fsh-sushi version` from the IG folder, then
+# a direct fetch of registry.npmjs.org if npm gives nothing; either answer only
+# counts if it is digits and dots. SUSHI fails the build when neither works, so
+# this stops there too. The sushi probed is the one the publisher runs: `sushi`
+# on PATH, with npmPath from fhir-settings.json in front when it is set.
 #
-# SUSHI_UPDATE=0 skips this, e.g. when SUSHI is installed and kept current by
-# someone other than the runner user.
+# SUSHI_UPDATE=0 skips the update, e.g. when SUSHI is installed and kept
+# current by someone other than the runner user.
 prepare_sushi() {
   local settings="$HOME/.fhir/fhir-settings.json" npm_path=""
-  [ -f "$settings" ] && npm_path="$(jq -r '.npmPath // empty' "$settings" 2>/dev/null || true)"
+  if [ -f "$settings" ]; then
+    npm_path="$(jq -r '.npmPath // empty' "$settings" 2>/dev/null)" || {
+      warn "$settings is not valid JSON - the publisher may not read its npmPath the way this check does"
+      npm_path=""
+    }
+  fi
   local -x PATH="${npm_path:+$npm_path:}$PATH"
 
-  # fsh.ini's sushi-version makes the publisher run `npx fsh-sushi@<that>` -
-  # still with --require-latest - so a pin breaks the build as soon as it is
-  # not the newest release, whatever is installed globally.
-  if [ -f "$IG_SRC/fsh.ini" ] && grep -qiE '^[[:space:]]*sushi-version[[:space:]]*=' "$IG_SRC/fsh.ini"; then
-    warn "fsh.ini pins sushi-version, which the publisher runs instead of the global sushi - with --require-latest that fails once the pin is not the latest release"
-  fi
+  local pin have latest err
+  pin="$(sushi_pin)"
+  have="$(sushi_version_of)"
 
   if [ "${SUSHI_UPDATE:-1}" = "0" ]; then
-    SUSHI_BUILD="$(sushi_version_of)"
+    if [ -n "$pin" ]; then
+      SUSHI_BUILD="$pin (fsh.ini)"
+    else
+      [ -n "$have" ] || [ ! -d "$IG_SRC/input/fsh" ] || die "SUSHI_UPDATE=0 but $(sushi_probe_failure)"
+      SUSHI_BUILD="$have"
+    fi
     log "SUSHI         : ${SUSHI_BUILD:-not installed} (SUSHI_UPDATE=0, not checked)"
     return 0
   fi
+
   command -v npm >/dev/null 2>&1 || die "npm is not on PATH - it is needed to keep fsh-sushi current; install Node or set SUSHI_UPDATE=0"
-  local have latest
-  have="$(sushi_version_of)"
-  latest="$(npm view fsh-sushi version 2>/dev/null || true)"
+  err="$(mktemp)"
+  local raw
+  raw="$(cd "$IG_SRC" && npm view fsh-sushi version 2>"$err" || true)"
+  latest="$raw"
+  case "$latest" in *[!0-9.]*) latest="" ;; esac
   if [ -z "$latest" ]; then
-    die "cannot read the latest fsh-sushi version from the npm registry - SUSHI's --require-latest makes the same query and fails the build when it cannot, so check the runner's route to $(npm config get registry 2>/dev/null || echo 'the npm registry')"
-  elif [ "$have" != "$latest" ]; then
+    warn "npm view fsh-sushi version gave '$raw' $(tail -3 "$err" | tr '\n' ' ')- trying registry.npmjs.org, as SUSHI does"
+    latest="$(curl -fsS --max-time 30 https://registry.npmjs.org/fsh-sushi 2>"$err" \
+              | jq -r '."dist-tags".latest // empty' 2>/dev/null || true)"
+    case "$latest" in *[!0-9.]*) latest="" ;; esac
+  fi
+  if [ -z "$latest" ]; then
+    local why; why="$(tail -3 "$err" | tr '\n' ' ')"; rm -f "$err"
+    die "cannot find the latest fsh-sushi from npm or registry.npmjs.org ($why) - SUSHI's --require-latest asks the same two and fails the build when neither answers"
+  fi
+  rm -f "$err"
+
+  if [ -n "$pin" ]; then
+    [ "$pin" = "$latest" ] || die \
+      "fsh.ini pins sushi-version=$pin but the latest fsh-sushi is $latest - the publisher runs the pin with --require-latest, so the build would fail. Update or remove the pin"
+    SUSHI_BUILD="$pin (fsh.ini)"
+    log "SUSHI         : $SUSHI_BUILD"
+    return 0
+  fi
+
+  if [ "$have" != "$latest" ]; then
     log "updating fsh-sushi ${have:-none} -> $latest"
-    npm install -g "fsh-sushi@$latest" >&2 || die \
-      "npm install -g fsh-sushi@$latest failed - the publisher runs SUSHI with --require-latest, so the build would fail anyway. Check that the runner user can write to $(npm prefix -g 2>/dev/null || echo 'the npm global prefix')"
+    ( cd "$IG_SRC" && npm install -g "fsh-sushi@$latest" ) >&2 || die \
+      "npm install -g fsh-sushi@$latest failed, see npm's error above (often: the runner user cannot write to $(npm prefix -g 2>/dev/null || echo 'the npm global prefix')). The publisher runs SUSHI with --require-latest, so the build would fail anyway"
     have="$(sushi_version_of)"
-    [ "$have" = "$latest" ] || die "installed fsh-sushi@$latest but sushi on PATH reports ${have:-nothing} - check PATH for a second sushi"
+    [ -n "$have" ] || die "installed fsh-sushi@$latest but $(sushi_probe_failure)"
+    [ "$have" = "$latest" ] || die \
+      "installed fsh-sushi@$latest but $(command -v sushi) reports $have - a second sushi earlier on PATH"
   fi
   SUSHI_BUILD="$have"
-  log "SUSHI         : ${have:-not installed}"
+  log "SUSHI         : $have"
 }
 
 # -go-publish clones and zips the whole source folder, so everything

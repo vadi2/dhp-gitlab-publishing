@@ -321,6 +321,13 @@ mkdir -p "$PUB_TEMP" "$ZIPS_DIR"
 # source tree is only there for _genonce.sh, which has now finished with it.
 drop_publisher_from_source
 
+# -go-publish runs SUSHI twice more with --require-latest, an hour or more
+# after the check above on a cold terminology cache. A SUSHI released in
+# between would fail it at the end of a green release, so check again. The
+# trade-off: if it does update, the site is built by a newer SUSHI than the
+# pre-build the gate measured; the log says so.
+prepare_sushi
+
 PUBLISH_LOG="${PUBLISH_LOG:-$IG_SRC/go-publish.log}"
 log "running -go-publish (this rebuilds the IG twice; expect 2-3x a normal build)"
 start=$(date +%s)
