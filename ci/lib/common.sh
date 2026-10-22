@@ -213,13 +213,16 @@ sushi_probe_failure() {
 
 # The sushi-version pin from the [FSH] section of fsh.ini, or "". With a pin
 # the publisher runs `npx fsh-sushi@<pin>` instead of the global sushi
-# (FSHRunner.runFsh).
+# (FSHRunner.runFsh). Read the way the publisher's IniFile reads it: section
+# names trimmed, the value is everything after the first `=`, the last
+# occurrence wins.
 sushi_pin() {
   [ -f "$IG_SRC/fsh.ini" ] || return 0
-  sed 's/\r$//' "$IG_SRC/fsh.ini" | awk -F= '
-    /^[[:space:]]*\[/ { fsh = ($0 ~ /^[[:space:]]*\[FSH\][[:space:]]*$/); next }
-    fsh && $1 ~ /^[[:space:]]*sushi-version[[:space:]]*$/ {
-      v = $2; gsub(/^[[:space:]]+|[[:space:]]+$/, "", v); print v; exit }'
+  sed 's/\r$//' "$IG_SRC/fsh.ini" | awk '
+    /^[[:space:]]*\[/ { fsh = ($0 ~ /^[[:space:]]*\[[[:space:]]*FSH[[:space:]]*\][[:space:]]*$/); next }
+    fsh && /^[[:space:]]*sushi-version[[:space:]]*=/ {
+      v = $0; sub(/^[^=]*=/, "", v); gsub(/^[[:space:]"\047]+|[[:space:]"\047]+$/, "", v) }
+    END { if (v != "") print v }'
 }
 
 # Bring the global fsh-sushi up to the latest release before a build.
@@ -267,7 +270,9 @@ prepare_sushi() {
   command -v npm >/dev/null 2>&1 || die "npm is not on PATH - it is needed to keep fsh-sushi current; install Node or set SUSHI_UPDATE=0"
   err="$(mktemp)"
   local raw
-  raw="$(cd "$IG_SRC" && npm view fsh-sushi version 2>"$err" || true)"
+  # SUSHI gives `npm view` 5 seconds; npm's own retries can take minutes on a
+  # registry that does not answer, so cap it before falling back.
+  raw="$(cd "$IG_SRC" && timeout 30 npm view fsh-sushi version 2>"$err" || true)"
   latest="$raw"
   case "$latest" in *[!0-9.]*) latest="" ;; esac
   if [ -z "$latest" ]; then
@@ -275,6 +280,9 @@ prepare_sushi() {
     latest="$(curl -fsS --max-time 30 https://registry.npmjs.org/fsh-sushi 2>"$err" \
               | jq -r '."dist-tags".latest // empty' 2>/dev/null || true)"
     case "$latest" in *[!0-9.]*) latest="" ;; esac
+    # curl succeeded but the body had no usable dist-tags.latest (a proxy's
+    # HTML page, say): leave a cause for the message below.
+    [ -n "$latest" ] || [ -s "$err" ] || echo "registry.npmjs.org returned no usable dist-tags.latest" >"$err"
   fi
   if [ -z "$latest" ]; then
     local why; why="$(tail -3 "$err" | tr '\n' ' ')"; rm -f "$err"
@@ -283,21 +291,30 @@ prepare_sushi() {
   rm -f "$err"
 
   if [ -n "$pin" ]; then
-    [ "$pin" = "$latest" ] || die \
-      "fsh.ini pins sushi-version=$pin but the latest fsh-sushi is $latest - the publisher runs the pin with --require-latest, so the build would fail. Update or remove the pin"
+    command -v npx >/dev/null 2>&1 || die \
+      "fsh.ini pins sushi-version=$pin, which the publisher runs with npx, and npx is not on PATH"
+    if [ "$pin" = "latest" ] || [ "$pin" = "$latest" ]; then
+      :
+    elif [[ "$pin" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+      die "fsh.ini pins sushi-version=$pin but the latest fsh-sushi is $latest - the publisher runs the pin with --require-latest, so the build would fail. Update or remove the pin"
+    else
+      # A range, a partial version or another dist-tag: npx resolves it, this
+      # check does not.
+      warn "fsh.ini pins sushi-version=$pin, which this check cannot compare with the latest ($latest) - the publisher runs it with --require-latest"
+    fi
     SUSHI_BUILD="$pin (fsh.ini)"
     log "SUSHI         : $SUSHI_BUILD"
     return 0
   fi
 
   if [ "$have" != "$latest" ]; then
-    log "updating fsh-sushi ${have:-none} -> $latest"
-    ( cd "$IG_SRC" && npm install -g "fsh-sushi@$latest" ) >&2 || die \
+    log "updating fsh-sushi ${have:-(none, or one that does not start)} -> $latest"
+    npm install -g "fsh-sushi@$latest" >&2 || die \
       "npm install -g fsh-sushi@$latest failed, see npm's error above (often: the runner user cannot write to $(npm prefix -g 2>/dev/null || echo 'the npm global prefix')). The publisher runs SUSHI with --require-latest, so the build would fail anyway"
     have="$(sushi_version_of)"
     [ -n "$have" ] || die "installed fsh-sushi@$latest but $(sushi_probe_failure)"
     [ "$have" = "$latest" ] || die \
-      "installed fsh-sushi@$latest but $(command -v sushi) reports $have - a second sushi earlier on PATH"
+      "installed fsh-sushi@$latest into $(npm prefix -g 2>/dev/null)/bin, but the sushi on PATH is $(command -v sushi) ($have). Put $(npm prefix -g 2>/dev/null)/bin first on the runner's PATH (step 4) or remove $(command -v sushi)"
   fi
   SUSHI_BUILD="$have"
   log "SUSHI         : $have"

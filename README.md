@@ -34,8 +34,9 @@ the root serves the latest release.
   `customers.gitlab.com`; an instance with no outbound internet needs a licence *file*.
 - One runner, shell executor, `concurrent = 1`, tag `dhp` (step 4). Its host needs Java 21, Node with
   `fsh-sushi` (`npm install -g fsh-sushi`, as the runner user: both scripts update it to the latest release
-  before every build, because the publisher runs SUSHI with `--require-latest`), Ruby with `jekyll`, `git`,
-  `curl`, `jq`, `rsync`, `unzip` and `zip` - what the guides' GitHub Actions install - and 16 GB of RAM: the publisher runs with a 12 GB heap.
+  before every build, because the publisher runs SUSHI with `--require-latest`; a `sushi-version` pin in
+  the guide's `fsh.ini` is checked instead), Ruby with `jekyll`, `git`, `curl`, `jq`, `rsync`, `unzip` and
+  `zip` - what the guides' GitHub Actions install - and 16 GB of RAM: the publisher runs with a 12 GB heap.
 - Disk on the runner host: about 2.1 GB in the web root per core release, half that per integrations
   release (`release.sh` deletes `full-ig.zip`, `expansions.json`, `expansions.xml` and `package.db`, about
   600 MB, from every version folder after each release; the root and `ci-build` keep theirs), plus 12 GB free for temp, which peaks around 11 GB and grows as versions accumulate, because
@@ -380,10 +381,10 @@ the other guide until that one is published too, without failing the run.
   `DHP_DATA` on the project does not match the host.
 - `sushi: command not found` or `jekyll: command not found` in the job log while both work in your own
   shell: the runner's non-login shell has another PATH. Set `environment = ["PATH=..."]` (step 4).
-- `npm install -g fsh-sushi@... failed` at the start of a build: npm's own error is just above it. Most
-  often the runner user cannot write to the npm global prefix because SUSHI was installed as root; reinstall
-  it as the runner user with `npm config set prefix ~/.npm-global && npm install -g fsh-sushi` and add the
-  PATH line from step 4.
+- `npm install -g fsh-sushi@... failed` before a build (or, in a release, before `-go-publish`): npm's own
+  error is just above it. Most often the runner user cannot write to the npm global prefix because SUSHI
+  was installed as root; reinstall it as the runner user with
+  `npm config set prefix ~/.npm-global && npm install -g fsh-sushi` and add the PATH line from step 4.
 - Tags or commits stopped arriving and no job failed: the mirror is hard-failed, which is silent with
   outgoing mail off. `60-mirror-ticker.sh health` names it; after a protected-ref change check the tag
   counts too (hardening section).
