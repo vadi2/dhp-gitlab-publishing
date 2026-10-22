@@ -323,7 +323,9 @@ drop_publisher_from_source
 
 # -go-publish runs SUSHI twice more with --require-latest, an hour or more
 # after the check above on a cold terminology cache. A SUSHI released in
-# between would fail it at the end of a green release, so check again. If that
+# between would fail it at the end of a green release, so check again. This
+# narrows the window rather than closing it: a release between -go-publish's
+# own two builds still fails it, before anything reaches the web root. If that
 # updates SUSHI, the site would be built by a SUSHI the pre-build never ran:
 # with the QA gate on that defeats the gate, so stop (nothing is published
 # yet, a re-run builds both with the new one); with it off, say so loudly.

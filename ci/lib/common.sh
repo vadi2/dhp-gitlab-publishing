@@ -189,11 +189,11 @@ prepare_publisher() {
 
 # ---------------------------------------------------------------------- sushi
 
-# The version `sushi --version` reports, or "" if it is not installed or does
-# not start. No `| head -1` (gotcha 6).
+# The version `sushi --version` reports ("SUSHI v3.21.0 (implements ...)"),
+# or "" if it is not installed or does not start. The whole token, so a
+# prerelease is not mistaken for the release. No `| head -1` (gotcha 6).
 sushi_version_of() {
-  sushi --version 2>/dev/null \
-    | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | sed -n 1p || true
+  sushi --version 2>/dev/null | sed -n 's/^SUSHI v\([^ ]*\).*/\1/p' | sed -n 1p || true
 }
 
 # Why sushi_version_of came back empty, for an error message: no sushi on
@@ -253,6 +253,9 @@ prepare_sushi() {
   local -x PATH="${npm_path:+$npm_path:}$PATH"
 
   local pin have latest err
+  # Checked here, not in sushi_pin: a die inside $(...) only ends the subshell.
+  [ ! -f "$IG_SRC/fsh.ini" ] || [ -r "$IG_SRC/fsh.ini" ] || \
+    die "$IG_SRC/fsh.ini is not readable - the publisher reads its sushi-version and timeout"
   pin="$(sushi_pin)"
   have="$(sushi_version_of)"
 
@@ -270,12 +273,13 @@ prepare_sushi() {
   command -v npm >/dev/null 2>&1 || die "npm is not on PATH - it is needed to keep fsh-sushi current; install Node or set SUSHI_UPDATE=0"
   err="$(mktemp)"
   local raw
-  # SUSHI gives `npm view` 5 seconds; npm's own retries can take minutes on a
-  # registry that does not answer, so cap it before falling back.
-  raw="$(cd "$IG_SRC" && timeout 30 npm view fsh-sushi version 2>"$err" || true)"
+  # The same 5 seconds SUSHI gives it: a slower npm (a mirror, a proxy) makes
+  # SUSHI fall back to registry.npmjs.org, so this has to as well.
+  raw="$(cd "$IG_SRC" && timeout 5 npm view fsh-sushi version 2>"$err" || true)"
   latest="$raw"
   case "$latest" in *[!0-9.]*) latest="" ;; esac
   if [ -z "$latest" ]; then
+    [ -n "$raw" ] || [ -s "$err" ] || echo "(no answer within 5 s)" >"$err"
     warn "npm view fsh-sushi version gave '$raw' $(tail -3 "$err" | tr '\n' ' ')- trying registry.npmjs.org, as SUSHI does"
     latest="$(curl -fsS --max-time 30 https://registry.npmjs.org/fsh-sushi 2>"$err" \
               | jq -r '."dist-tags".latest // empty' 2>/dev/null || true)"
@@ -293,16 +297,18 @@ prepare_sushi() {
   if [ -n "$pin" ]; then
     command -v npx >/dev/null 2>&1 || die \
       "fsh.ini pins sushi-version=$pin, which the publisher runs with npx, and npx is not on PATH"
+    # SUSHI_BUILD carries the resolved version, so release.sh's second check
+    # sees a release that lands mid-run even when the pin itself is unchanged.
     if [ "$pin" = "latest" ] || [ "$pin" = "$latest" ]; then
-      :
+      SUSHI_BUILD="$latest (fsh.ini: $pin)"
     elif [[ "$pin" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
       die "fsh.ini pins sushi-version=$pin but the latest fsh-sushi is $latest - the publisher runs the pin with --require-latest, so the build would fail. Update or remove the pin"
     else
       # A range, a partial version or another dist-tag: npx resolves it, this
       # check does not.
       warn "fsh.ini pins sushi-version=$pin, which this check cannot compare with the latest ($latest) - the publisher runs it with --require-latest"
+      SUSHI_BUILD="$pin (fsh.ini, latest $latest)"
     fi
-    SUSHI_BUILD="$pin (fsh.ini)"
     log "SUSHI         : $SUSHI_BUILD"
     return 0
   fi
@@ -313,8 +319,18 @@ prepare_sushi() {
       "npm install -g fsh-sushi@$latest failed, see npm's error above (often: the runner user cannot write to $(npm prefix -g 2>/dev/null || echo 'the npm global prefix')). The publisher runs SUSHI with --require-latest, so the build would fail anyway"
     have="$(sushi_version_of)"
     [ -n "$have" ] || die "installed fsh-sushi@$latest but $(sushi_probe_failure)"
-    [ "$have" = "$latest" ] || die \
-      "installed fsh-sushi@$latest into $(npm prefix -g 2>/dev/null)/bin, but the sushi on PATH is $(command -v sushi) ($have). Put $(npm prefix -g 2>/dev/null)/bin first on the runner's PATH (step 4) or remove $(command -v sushi)"
+    if [ "$have" != "$latest" ]; then
+      local bin npm_bin
+      bin="$(command -v sushi || true)"
+      npm_bin="$(npm prefix -g 2>/dev/null || echo '<npm prefix -g>')/bin"
+      [ "$bin" = "$npm_bin/sushi" ] && die \
+        "npm install -g fsh-sushi@$latest reported success but $bin still reports $have"
+      # The publisher puts npmPath in front of PATH itself, so the runner's
+      # PATH cannot fix this one.
+      [ -n "$npm_path" ] && [ "$bin" = "${npm_path%/}/sushi" ] && die \
+        "installed fsh-sushi@$latest into $npm_bin, but npmPath in $settings puts $bin ($have) first - point npmPath at $npm_bin, or remove it"
+      die "installed fsh-sushi@$latest into $npm_bin, but the sushi on PATH is $bin ($have). Put $npm_bin first on the runner's PATH (step 4) or remove $bin"
+    fi
   fi
   SUSHI_BUILD="$have"
   log "SUSHI         : $have"
