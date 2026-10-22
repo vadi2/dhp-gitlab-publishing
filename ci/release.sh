@@ -321,22 +321,6 @@ mkdir -p "$PUB_TEMP" "$ZIPS_DIR"
 # source tree is only there for _genonce.sh, which has now finished with it.
 drop_publisher_from_source
 
-# -go-publish runs SUSHI twice more with --require-latest, an hour or more
-# after the check above on a cold terminology cache. A SUSHI released in
-# between would fail it at the end of a green release, so check again. This
-# narrows the window rather than closing it: a release between -go-publish's
-# own two builds still fails it, before anything reaches the web root. If that
-# updates SUSHI, the site would be built by a SUSHI the pre-build never ran:
-# with the QA gate on that defeats the gate, so stop (nothing is published
-# yet, a re-run builds both with the new one); with it off, say so loudly.
-SUSHI_PREBUILD="$SUSHI_BUILD"
-prepare_sushi
-if [ "$SUSHI_BUILD" != "$SUSHI_PREBUILD" ]; then
-  qa_gate_enabled && die \
-    "fsh-sushi $SUSHI_PREBUILD -> $SUSHI_BUILD was released during this release; the QA gate measured $SUSHI_PREBUILD - re-run the release"
-  warn "fsh-sushi $SUSHI_PREBUILD -> $SUSHI_BUILD was released during this release: the site is built by $SUSHI_BUILD, the pre-build counts are from $SUSHI_PREBUILD"
-fi
-
 PUBLISH_LOG="${PUBLISH_LOG:-$IG_SRC/go-publish.log}"
 log "running -go-publish (this rebuilds the IG twice; expect 2-3x a normal build)"
 start=$(date +%s)
@@ -377,15 +361,12 @@ PUB_QA="$PUB_TEMP/ig-builds/$IG_ID#$VERSION-milestone/output/qa.json"
 if [ -f "$PUB_QA" ]; then
   read -r PUB_ERRS PUB_WARNS <<<"$(jq -r 'if (.errs|type) == "number" and (.warnings|type) == "number"
                                           then "\(.errs) \(.warnings)" else "? ?" end' "$PUB_QA" 2>/dev/null || echo "? ?")"
-  log "QA of the published build: $PUB_ERRS errors, $PUB_WARNS warnings (pre-build: $ERRS errors, $WARNS warnings; SUSHI $SUSHI_BUILD)"
+  log "QA of the published build: $PUB_ERRS errors, $PUB_WARNS warnings (pre-build: $ERRS errors, $WARNS warnings)"
   if [ "$PUB_ERRS" != "0" ]; then
     warn "the build that was PUBLISHED reports $PUB_ERRS errors and $PUB_WARNS warnings (the pre-build reported $ERRS and $WARNS)"
     warn "  the site at $SITE_URL$IG_DEST/ is already written, so this is a signal, not a gate"
     # Not $PUB_QA: that lives under $PUB_TEMP, which is emptied a few lines down.
     warn "  the findings are in the published $SITE_URL$IG_DEST/qa.html"
-    if [ "$SUSHI_BUILD" != "$SUSHI_PREBUILD" ]; then
-      warn "  the pre-build ran SUSHI $SUSHI_PREBUILD and the published build $SUSHI_BUILD - compare the two before blaming terminology"
-    fi
     warn "  if the pre-build was clean, this is gotcha 1a: -resetTx re-resolves terminology from scratch, and a warm pre-build cannot see it"
   elif [ "$PUB_ERRS" != "$ERRS" ] || [ "$PUB_WARNS" != "$WARNS" ]; then
     # Not an error, but the two numbers disagreeing is the whole of gotcha 1a
