@@ -482,7 +482,7 @@ pipeline, unset by hand means no seeding); `JAVA_HEAP` (`-Xmx12g`); `CI_BUILD_RE
 0.x, used when `sushi-config.yaml` says `releaseLabel: ci-build`), `FAIL_ON_QA_ERRORS` (`0`; `0`, `false`, `no` and `off` mean
 off and anything else means on, so a typo leaves the gate on), `GATE_WARM_TXCACHE` (`0`), `ALLOW_REPUBLISH`
 (`0`), `PRUNE_FILES` (`full-ig.zip expansions.json expansions.xml package.db`; empty turns pruning off), `ROLLBACK_ASSUME_YES` (`0`), `KEEP_ZIP` (`0`), `NEED_TEMP_GB` and `NEED_WEB_GB` (`20`),
-`WEB_LOCK_WAIT` (`21600`), `PUBLISHER_VERSION` (unset, latest), `PUBLISHER_REFRESH` (`0`), `SUSHI_UPDATE` (`1`; `0` skips the fsh-sushi update), `STAGING_DIR`
+`WEB_LOCK_WAIT` (`21600`), `PUBLISHER_VERSION` (unset, latest), `PUBLISHER_REFRESH` (`0`), `SUSHI_UPDATE` (`1`; `0` skips the fsh-sushi update, for a SUSHI kept current by someone else), `STAGING_DIR`
 (`$WEB_ROOT/.staging`), `HIST_ASSETS_DIR` (`$WEB_ROOT/fhir/assets-hist`).
 
 ## Optional: harden the two projects

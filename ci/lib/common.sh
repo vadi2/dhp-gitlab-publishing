@@ -204,8 +204,26 @@ sushi_version_of() {
 # pre-GitLab deploy ran `npm update -g fsh-sushi` before each build for the same
 # reason. Only installs when the installed version differs from npm's latest.
 #
-# SUSHI_UPDATE=0 skips this, e.g. on a runner with no route to the npm registry.
+# The comparison is the one --require-latest makes: SUSHI runs
+# `npm view fsh-sushi version` and fails unless it equals its own version,
+# including when the registry cannot be read. The sushi probed here is the one
+# the publisher runs: `sushi` on PATH, with npmPath from fhir-settings.json in
+# front when it is set (FSHRunner).
+#
+# SUSHI_UPDATE=0 skips this, e.g. when SUSHI is installed and kept current by
+# someone other than the runner user.
 prepare_sushi() {
+  local settings="$HOME/.fhir/fhir-settings.json" npm_path=""
+  [ -f "$settings" ] && npm_path="$(jq -r '.npmPath // empty' "$settings" 2>/dev/null || true)"
+  local -x PATH="${npm_path:+$npm_path:}$PATH"
+
+  # fsh.ini's sushi-version makes the publisher run `npx fsh-sushi@<that>` -
+  # still with --require-latest - so a pin breaks the build as soon as it is
+  # not the newest release, whatever is installed globally.
+  if [ -f "$IG_SRC/fsh.ini" ] && grep -qiE '^[[:space:]]*sushi-version[[:space:]]*=' "$IG_SRC/fsh.ini"; then
+    warn "fsh.ini pins sushi-version, which the publisher runs instead of the global sushi - with --require-latest that fails once the pin is not the latest release"
+  fi
+
   if [ "${SUSHI_UPDATE:-1}" = "0" ]; then
     SUSHI_BUILD="$(sushi_version_of)"
     log "SUSHI         : ${SUSHI_BUILD:-not installed} (SUSHI_UPDATE=0, not checked)"
@@ -216,9 +234,7 @@ prepare_sushi() {
   have="$(sushi_version_of)"
   latest="$(npm view fsh-sushi version 2>/dev/null || true)"
   if [ -z "$latest" ]; then
-    # --require-latest will fail the build anyway if this one is out of date,
-    # but an unreachable registry is not itself a reason to stop here.
-    warn "cannot read the latest fsh-sushi version from npm, keeping ${have:-none}"
+    die "cannot read the latest fsh-sushi version from the npm registry - SUSHI's --require-latest makes the same query and fails the build when it cannot, so check the runner's route to $(npm config get registry 2>/dev/null || echo 'the npm registry')"
   elif [ "$have" != "$latest" ]; then
     log "updating fsh-sushi ${have:-none} -> $latest"
     npm install -g "fsh-sushi@$latest" >&2 || die \
