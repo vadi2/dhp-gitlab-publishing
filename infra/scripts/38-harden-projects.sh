@@ -19,6 +19,12 @@
 #       Job traces and QA artifacts stop being readable by every signed-in
 #       user on an internal project.
 #
+#   auto_cancel_pending_pipelines = enabled
+#       A new commit on main then cancels the older main pipelines' ci-build
+#       while it is still waiting for dhp-webroot, so a release queues behind
+#       at most one continuous build, not a string of superseded ones. On by
+#       default; set here so it cannot be switched off unnoticed.
+#
 #   ci_pipeline_variables_minimum_override_role = owner      F-06
 #       FAIL_ON_QA_ERRORS=0 (and SKIP_DEPLOY, WEB_ROOT, PUB_MODE ...) can no
 #       longer be passed by a Developer starting a pipeline.
@@ -86,7 +92,7 @@ show_project() {
   api GET "/projects/$id" | python3 -c '
 import sys, json
 d = json.load(sys.stdin)
-for k in ("ci_config_path", "public_jobs",
+for k in ("ci_config_path", "public_jobs", "auto_cancel_pending_pipelines",
           "ci_pipeline_variables_minimum_override_role",
           "restrict_user_defined_variables"):
     print("   %-44s= %r" % (k, d.get(k)))'
@@ -119,22 +125,25 @@ apply_settings() {
   local id="$1" path="$2"
   local want_ci_path=".gitlab-ci.yml@${path}:ci"
 
-  local cur cur_ci cur_pub cur_role
+  local cur cur_ci cur_pub cur_role cur_cancel
   cur=$(api GET "/projects/$id")
   cur_ci=$(jget 'd.get("ci_config_path") or ""' <<<"$cur")
   cur_pub=$(jget 'str(d.get("public_jobs")).lower()' <<<"$cur")
   cur_role=$(jget 'd.get("ci_pipeline_variables_minimum_override_role") or ""' <<<"$cur")
+  cur_cancel=$(jget 'd.get("auto_cancel_pending_pipelines") or ""' <<<"$cur")
 
-  if [[ "$cur_ci" == "$want_ci_path" && "$cur_pub" == "false" && "$cur_role" == "owner" ]]; then
-    echo "   settings: already ci_config_path / public_jobs / override_role"
+  if [[ "$cur_ci" == "$want_ci_path" && "$cur_pub" == "false" && "$cur_role" == "owner" \
+        && "$cur_cancel" == "enabled" ]]; then
+    echo "   settings: already ci_config_path / public_jobs / override_role / auto_cancel"
     return 0
   fi
 
   api PUT "/projects/$id" \
     --form "ci_config_path=${want_ci_path}" \
     --form "public_jobs=false" \
+    --form "auto_cancel_pending_pipelines=enabled" \
     --form "ci_pipeline_variables_minimum_override_role=owner" >/dev/null
-  echo "   settings: ci_config_path=${want_ci_path}, public_jobs=false, override_role=owner"
+  echo "   settings: ci_config_path=${want_ci_path}, public_jobs=false, auto_cancel=enabled, override_role=owner"
 }
 
 # ---------------------------------------------------------- protected tag ----

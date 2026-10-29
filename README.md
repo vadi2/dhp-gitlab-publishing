@@ -74,8 +74,17 @@ Check: `GET /projects/<id>/mirror/pull` reports `update_status: finished` and `l
 branch and tag counts match GitHub. The GitLab-only `ci` branch from step 7 survives mirror updates: a ref
 deleted in GitLab comes back on the next pull, a GitLab-only ref is left alone.
 
-GitLab's own polling is enough: a tag is picked up within 30 minutes and the pipeline starts on its own.
-Faster is preferable, so a release does not sit unpublished for half an hour, but it is not required.
+GitLab's own polling picks a tag up within 30 minutes and the pipeline starts on its own, so a release can
+sit unpublished for half an hour before its pipeline even exists. Install the mirror ticker, which forces a
+pull every minute:
+
+```sh
+infra/scripts/60-mirror-ticker.sh install   # tokens into infra/.env, plan limit to 30 s, the cron line
+infra/scripts/60-mirror-ticker.sh health    # exits 1 if anything is wrong - put this in a monitor
+```
+
+Run `install` as the user that owns `infra/.env`; it needs `GITLAB_RAILS` (default `sudo gitlab-rails`) for
+the plan limit and is idempotent. The details, and a GitHub webhook as the alternative, are below.
 
 <details>
 <summary>Getting tags picked up faster than 30 minutes</summary>
@@ -84,7 +93,8 @@ Native polling has a hard floor of 30 minutes (`Gitlab::Mirror::MIN_DELAY` is a 
 Two ways to shorten it, both using a per-project access token, `api`-scoped at Maintainer with an expiry -
 the narrowest thing that works on 19.4, since a Developer-level token gets 403 on `mirror/pull`.
 
-1. A GitHub push webhook, if GitHub can reach the instance. Payload URL
+1. A GitHub push webhook, if GitHub can reach the instance. This needs admin rights on the GitHub
+   repositories. Payload URL
    `https://<gitlab>/api/v4/projects/<id>/mirror/pull` with no query string, content type
    `application/json`, "Just the push event", and GitHub's Secret field set to that project's
    `external_webhook_token` from the hardening section - GitLab verifies GitHub's `X-Hub-Signature`, so no
@@ -107,7 +117,8 @@ the narrowest thing that works on 19.4, since a Developer-level token gets 403 o
    infra/scripts/60-mirror-ticker.sh health   # exits 1 if anything is wrong - put this in a monitor
    ```
 
-   The line `setup` prints goes in the crontab of the user that owns `infra/.env`:
+   `install` does `setup`, the plan limit below and the crontab in one go. By hand, the line `setup` prints
+   goes in the crontab of the user that owns `infra/.env`:
 
    ```
    * * * * * /path/to/infra/scripts/60-mirror-ticker.sh once >/dev/null 2>&1
@@ -292,7 +303,23 @@ The rules: no pipeline at all on the `ci` branch itself, so pushing scripts crea
 pipelines; `ci-build` on the default branch, deploying to `/fhir/<ig>/ci-build/`, 3 h timeout; `release` on
 tags matching `^\d+\.\d+\.\d+$` (bare semver, no `v` prefix), which builds and then runs `-go-publish`,
 6 h timeout. Both jobs carry `resource_group: dhp-webroot` and `interruptible: false`, and keep
-`output/qa.html`, `qa.txt` and `qa.json` as artifacts for a week. Changing a script later is a commit on
+`output/qa.html`, `qa.txt` and `qa.json` as artifacts for a week.
+
+A release waits for whatever holds `dhp-webroot` before it. Two things keep continuous builds out of its
+way:
+
+- A new commit on `main` cancels the older `main` pipelines whose `ci-build` is still waiting for the
+  resource group, so at most one superseded build is queued. This is GitLab's default auto-cancel and needs
+  "Auto-cancel redundant pipelines" on in Settings > CI/CD > General pipelines; the hardening script
+  enforces it.
+- A `ci-build` whose commit carries an `X.Y.Z` tag skips itself, since the release publishes that commit
+  anyway. It looks for the tag for `CI_BUILD_TAG_GRACE` seconds (default 120, `0` turns the check off),
+  because the tag usually reaches the mirror a pull after the merge. The continuous build then shows the
+  previous commit until the next push to `main`.
+
+A `ci-build` that is already running is not made interruptible on purpose. With the packaged runner, which
+starts jobs through `su`, cancelling one kills only the `su` session: the build carries on as an orphan,
+deploys, and the job sits in "canceling" until it finishes, so nothing is saved and the log is misleading. Changing a script later is a commit on
 the `ci` branch, or in the scripts project - nothing to install on the runner.
 
 Check: pushing to `ci` creates no pipeline; a pipeline on `main` starts a `ci-build` job.
@@ -420,7 +447,7 @@ infra/scripts/lib.sh                 shared env + API helpers for the scripts be
 infra/scripts/38-harden-projects.sh  apply|show the project settings of the hardening section
 infra/scripts/37-resource-group-mode.sh  set dhp-webroot to oldest_first (step 8)
 infra/scripts/enable-pull-mirror.sh  turn on pull mirroring for both projects
-infra/scripts/60-mirror-ticker.sh    setup|once|status|health - forced mirror pulls from cron
+infra/scripts/60-mirror-ticker.sh    install|setup|once|status|health - forced mirror pulls from cron
 infra/scripts/manual-sync.sh         CE/unlicensed fallback: fetch GitHub, push to GitLab
 infra/scripts/45-trigger-pipeline.sh trigger a pipeline on a ref, optionally with variables
 infra/scripts/36-publish-ci-scripts.sh push ci/ to the `ci` branch of both projects (step 7)
@@ -479,7 +506,7 @@ pipeline, unset by hand means no seeding); `JAVA_HEAP` (`-Xmx12g`); `CI_BUILD_RE
 0.x, used when `sushi-config.yaml` says `releaseLabel: ci-build`), `FAIL_ON_QA_ERRORS` (`0`; `0`, `false`, `no` and `off` mean
 off and anything else means on, so a typo leaves the gate on), `GATE_WARM_TXCACHE` (`0`), `ALLOW_REPUBLISH`
 (`0`), `PRUNE_FILES` (`full-ig.zip expansions.json expansions.xml package.db`; empty turns pruning off), `ROLLBACK_ASSUME_YES` (`0`), `KEEP_ZIP` (`0`), `NEED_TEMP_GB` and `NEED_WEB_GB` (`20`),
-`WEB_LOCK_WAIT` (`21600`), `PUBLISHER_VERSION` (unset, latest), `PUBLISHER_REFRESH` (`0`), `STAGING_DIR`
+`WEB_LOCK_WAIT` (`21600`), `CI_BUILD_TAG_GRACE` (`120`), `PUBLISHER_VERSION` (unset, latest), `PUBLISHER_REFRESH` (`0`), `STAGING_DIR`
 (`$WEB_ROOT/.staging`), `HIST_ASSETS_DIR` (`$WEB_ROOT/fhir/assets-hist`).
 
 ## Optional: harden the two projects
@@ -500,6 +527,8 @@ Per project it sets:
   pushed ref, so any mirrored branch can define its own jobs and run them as the runner user, which owns
   the web root. It also lets old tags that carry no CI config build at all (step 9).
 - `public_jobs = false`: job logs and QA artifacts stop being readable by every signed-in user.
+- `auto_cancel_pending_pipelines = enabled`: what lets a new commit on `main` cancel superseded
+  `ci-build`s (step 7). On by default; set so it cannot be switched off unnoticed.
 - `ci_pipeline_variables_minimum_override_role = owner`: a Developer can no longer pass
   `FAIL_ON_QA_ERRORS`, `SKIP_DEPLOY`, `DHP_DATA` or `PUB_MODE` on the Run pipeline form. Defaults still
   come from `.gitlab-ci.yml` on the `ci` branch and from CI/CD settings.

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Force a pull-mirror update of both projects, and check that mirroring works.
 #
+#   60-mirror-ticker.sh install   everything below in one go: setup, lower the
+#                                 plan limit, add the cron line. Idempotent.
 #   60-mirror-ticker.sh setup     create the two project access tokens (into
 #                                 infra/.env) and print the cron line to install
 #   60-mirror-ticker.sh once      one forced pull of both projects - this is
@@ -37,6 +39,12 @@ STALE_SECONDS="${MIRROR_STALE_SECONDS:-600}"
 # Warn this many days before a token expires.
 EXPIRY_WARN_DAYS="${MIRROR_EXPIRY_WARN_DAYS:-14}"
 TOKEN_NAME="dhp-mirror-tick"
+# How `install` reaches the rails console to lower the plan limit; for a
+# containerised GitLab, GITLAB_RAILS="docker exec -i <container> gitlab-rails".
+GITLAB_RAILS="${GITLAB_RAILS:-sudo gitlab-rails}"
+# Forced pulls closer together than this are refused. Below the cron interval.
+PULL_INTERVAL_SECONDS="${PULL_MIRROR_INTERVAL_SECONDS:-30}"
+CRON_LINE="* * * * * $HERE/60-mirror-ticker.sh once >/dev/null 2>&1"
 
 # Create a project access token unless .env already carries a working one.
 ensure_token() {
@@ -90,7 +98,44 @@ require_mirror_tokens() {
   }
 }
 
+# Add the per-minute pull to the current user's crontab unless it is there.
+install_cron() {
+  local current
+  current="$(crontab -l 2>/dev/null || true)"
+  if grep -qF "$HERE/60-mirror-ticker.sh once" <<<"$current"; then
+    echo "crontab: already runs 60-mirror-ticker.sh once"
+    return 0
+  fi
+  { [[ -n "$current" ]] && printf '%s\n' "$current"; printf '%s\n' "$CRON_LINE"; } | crontab -
+  echo "crontab: added  $CRON_LINE"
+}
+
+# The plan limit pull_mirror_interval_seconds (default 300) rejects forced
+# pulls closer together than that, which would make a per-minute cron a
+# five-minute one. It is not in the plan-limits API, only the rails console.
+lower_pull_interval() {
+  # shellcheck disable=SC2086 # GITLAB_RAILS is a command line, split on purpose
+  if $GITLAB_RAILS runner \
+       "Plan.default.actual_limits.update!(pull_mirror_interval_seconds: ${PULL_INTERVAL_SECONDS}); puts Plan.default.actual_limits.pull_mirror_interval_seconds"; then
+    echo "plan limit: pull_mirror_interval_seconds = ${PULL_INTERVAL_SECONDS}"
+  else
+    echo "plan limit: could not run '${GITLAB_RAILS} runner' - lower pull_mirror_interval_seconds by hand (see the header of this script)" >&2
+    return 1
+  fi
+}
+
 case "${1:-status}" in
+
+install)
+  require_token
+  ensure_token "$CORE_PROJECT_ID" CORE_MIRROR_TOKEN
+  ensure_token "$INTEGRATION_PROJECT_ID" INTEGRATION_MIRROR_TOKEN
+  rc=0
+  lower_pull_interval || rc=1
+  install_cron
+  echo "put \`$HERE/60-mirror-ticker.sh health\` in whatever monitors this host."
+  exit $rc
+  ;;
 
 setup)
   require_token
@@ -102,9 +147,9 @@ Tokens are in $ENV_FILE. Install this in the crontab of the user that owns it
 (crontab -e); one forced pull per minute is the useful floor, since the plan
 limit rejects anything faster than pull_mirror_interval_seconds:
 
-  * * * * * $HERE/60-mirror-ticker.sh once >/dev/null 2>&1
+  $CRON_LINE
 
-and put \`$HERE/60-mirror-ticker.sh health\` in whatever monitors this host.
+or run \`$0 install\`, which also lowers the plan limit. And put \`$HERE/60-mirror-ticker.sh health\` in whatever monitors this host.
 EOF
   ;;
 
@@ -208,7 +253,7 @@ sys.exit(rc)'; then
   ;;
 
 *)
-  echo "usage: $0 [setup|once|status|health]" >&2
+  echo "usage: $0 [install|setup|once|status|health]" >&2
   exit 2
   ;;
 esac
