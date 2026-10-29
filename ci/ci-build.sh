@@ -22,6 +22,35 @@ SKIP_DEPLOY="${SKIP_DEPLOY:-0}"
 
 load_ig_config
 
+# A release tag on this very commit has a release job queued behind this one in
+# the dhp-webroot resource group, and it publishes the same content. Building
+# the ci-build first would hold that release back 20-25 minutes, so step aside
+# instead. The tag is usually pushed a minute or so after the merge and can
+# reach the mirror in a later pull than the commit, so keep looking for
+# CI_BUILD_TAG_GRACE seconds before building. 0 turns the check off.
+TAG_GRACE="${CI_BUILD_TAG_GRACE:-120}"
+
+release_tags_of_commit() {
+  git -C "$IG_SRC" ls-remote --tags origin 2>/dev/null \
+    | awk -v sha="$CI_COMMIT_SHA" '$1 == sha && $2 ~ /^refs\/tags\/[0-9]+\.[0-9]+\.[0-9]+(\^\{\})?$/ {
+        sub(/^refs\/tags\//, "", $2); sub(/\^\{\}$/, "", $2); print $2 }'
+}
+
+if [ "$SKIP_DEPLOY" != "1" ] && [ -n "${CI_COMMIT_SHA:-}" ] && [ "$TAG_GRACE" -gt 0 ]; then
+  waited=0
+  while :; do
+    tags="$(release_tags_of_commit || true)"
+    if [ -n "$tags" ]; then
+      log "commit ${CI_COMMIT_SHA:0:8} is release ${tags%%$'\n'*}, which publishes it - skipping the ci-build so the release does not wait behind it"
+      exit 0
+    fi
+    [ "$waited" -lt "$TAG_GRACE" ] || break
+    sleep 15
+    waited=$(( waited + 15 ))
+  done
+  log "no release tag on ${CI_COMMIT_SHA:0:8} after ${TAG_GRACE}s, building"
+fi
+
 # Everything below writes $WEB_ROOT except a SKIP_DEPLOY build, which is the one
 # job that may run outside the web-root resource group. Take the lock before the
 # build rather than before the copy: the build is what takes the time, and two
