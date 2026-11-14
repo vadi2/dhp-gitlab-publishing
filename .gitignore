@@ -1,3 +1,7 @@
 .env
 .mirror-tokens
 .activation-code
+
+# Claude Code personal files (may hold secrets)
+**/.claude/settings.local.json
+CLAUDE.local.md
