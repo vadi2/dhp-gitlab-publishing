@@ -140,18 +140,32 @@ publisher_build_of() {
     | grep -oE 'Version [0-9]+\.[0-9]+\.[0-9]+' | sed -n '1s/^Version //p' || true
 }
 
-# Put a publisher.jar in the repo's input-cache without re-downloading it on
-# every run. Refreshes only when missing, when PUBLISHER_REFRESH=1, or when
-# PUBLISHER_VERSION pins a version the cached jar is not.
+# The tag of the newest HL7/fhir-ig-publisher release, or "" if GitHub cannot
+# be reached. Read from where releases/latest redirects to rather than from the
+# API, which allows 60 unauthenticated requests an hour per IP.
+latest_publisher_release() {
+  curl -fsSIL -o /dev/null -w '%{url_effective}' --max-time 30 \
+       https://github.com/HL7/fhir-ig-publisher/releases/latest 2>/dev/null \
+    | sed -n 's|^.*/releases/tag/\([^/]*\)$|\1|p' || true
+}
+
+# Put a publisher.jar in the repo's input-cache, re-downloading it only when the
+# cached jar is missing, is not the wanted version, or PUBLISHER_REFRESH=1.
 #
-# PUBLISHER_VERSION is the release tag in HL7/fhir-ig-publisher (e.g. 2.3.4).
-# Unset means "whatever is current", which is how every release so far was
-# built - convenient, but it means a release is not reproducible from its tag
-# and that a publisher release can turn a green tag red overnight (same class
-# as gotcha 8). Pin it once the pipeline is live.
+# PUBLISHER_VERSION is the release tag in HL7/fhir-ig-publisher (e.g. 3.0.5).
+# Unset means the newest release, checked on every run: the jar used to be
+# fetched once and then reused, which left dhp.uz on 2.3.4 a whole major version
+# after 3.0 shipped. Tracking latest means a release is not reproducible from
+# its tag and a publisher release can turn a green tag red overnight (same class
+# as gotcha 8) - pin it to hold a version back.
 prepare_publisher() {
   mkdir -p "$PUBLISHER_CACHE"
-  local want="${PUBLISHER_VERSION:-}" url refresh=0
+  local pinned="${PUBLISHER_VERSION:-}" want url refresh=0 cached=""
+  want="$pinned"
+  if [ -z "$want" ]; then
+    want="$(latest_publisher_release)"
+    [ -n "$want" ] || warn "could not look up the latest IG publisher release on GitHub, keeping the cached jar"
+  fi
   if [ -n "$want" ]; then
     url="https://github.com/HL7/fhir-ig-publisher/releases/download/$want/publisher.jar"
   else
@@ -159,10 +173,12 @@ prepare_publisher() {
   fi
   [ -s "$PUBLISHER_JAR" ] || refresh=1
   [ "${PUBLISHER_REFRESH:-0}" = "1" ] && refresh=1
-  if [ "$refresh" = "0" ] && [ -n "$want" ] && \
-     [ "$(publisher_build_of "$PUBLISHER_JAR")" != "$want" ]; then
-    log "cached publisher is not $want"
-    refresh=1
+  if [ "$refresh" = "0" ] && [ -n "$want" ]; then
+    cached="$(publisher_build_of "$PUBLISHER_JAR")"
+    if [ "$cached" != "$want" ]; then
+      log "cached publisher is ${cached:-unreadable}, want $want${pinned:+ (PUBLISHER_VERSION)}"
+      refresh=1
+    fi
   fi
   if [ "$refresh" = "1" ]; then
     log "downloading IG publisher${want:+ $want} to $PUBLISHER_JAR"
@@ -183,7 +199,7 @@ prepare_publisher() {
   [ -n "$PUBLISHER_BUILD" ] || die \
     "$PUBLISHER_JAR does not report a version - it is truncated or not a jar. Delete it, or re-run with PUBLISHER_REFRESH=1"
   if [ -n "$want" ] && [ "$PUBLISHER_BUILD" != "$want" ]; then
-    die "PUBLISHER_VERSION=$want but $PUBLISHER_JAR reports $PUBLISHER_BUILD"
+    die "${pinned:+PUBLISHER_VERSION=}${pinned:-latest release is }$want but $PUBLISHER_JAR reports $PUBLISHER_BUILD"
   fi
 }
 
